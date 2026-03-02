@@ -35,7 +35,7 @@ UNIT_NAME_MAP = {
     "VoidRay":      "VOIDRAY",
 }
 
-# Ordered lists matching observation_wrapper.py exactly
+# ordered lists matching observation_wrapper.py exactly
 STRUCTURES = [
     "NEXUS", "PYLON", "GATEWAY", "WARPGATE", "FORGE", "TWILIGHTCOUNCIL",
     "PHOTONCANNON", "SHIELDBATTERY", "TEMPLARARCHIVE", "ROBOTICSBAY",
@@ -75,11 +75,10 @@ class GameState:
 
         # opponent supply (from their PlayerStatsEvent)
         self.opp_supply_used = 0.0
-        self.opp_supply_cap = 0.0
 
     def update_from_stats(self, event: PlayerStatsEvent):
         self.time = event.second
-        # Handle different replay versions
+        # handle compatibility with older replay versions as well
         self.minerals = getattr(event, 'minerals_current',
                                 getattr(event, 'minerals', 0))
         self.vespene = getattr(event, 'vespene_current',
@@ -90,11 +89,9 @@ class GameState:
             event, 'supply_made', getattr(event, 'food_made', 0))
 
     def update_opp_from_stats(self, event: PlayerStatsEvent):
-        # Handle different replay versions
+        # handle compatibility with older replay versions as well
         self.opp_supply_used = getattr(
             event, 'supply_used', getattr(event, 'food_used', 0))
-        self.opp_supply_cap = getattr(
-            event, 'supply_made', getattr(event, 'food_made', 0))
 
     def unit_born_or_done(self, unit_type_name: str):
         """Call when a unit/structure finishes construction or is born."""
@@ -120,7 +117,7 @@ class GameState:
         Serialize to the same flat vector as ObservationWrapper.get_observation().
         Order: time, minerals, vespene, supply_used, supply_cap, supply_left,
                worker_saturation, [15 structures], [8 units], opp_supply_used
-        Total: 9 + 15 + 7 = 31 floats
+        Total: 8 + 15 + 8 = 31 floats
         """
         supply_left = max(0.0, self.supply_cap - self.supply_used)
         ideal_workers = max(self.counts["NEXUS"], 1) * 22
@@ -169,12 +166,12 @@ class ReplayParser:
         self.EVENT_TO_ACTION = {
             # Training units
             "TrainProbe":           1,
-            "TrainZealot":          15,
-            "TrainStalker":         16,
-            "TrainImmortal":        17,
-            "TrainVoidRay":         18,
-            "TrainCarrier":         19,
-            "TrainHighTemplar":     20,
+            "TrainZealot":          14,
+            "TrainStalker":         15,
+            "TrainImmortal":        16,
+            "TrainVoidRay":         17,
+            "TrainCarrier":         18,
+            "TrainHighTemplar":     19,
             # Building structures
             "BuildPylon":           2,
             "BuildGateway":         3,
@@ -184,20 +181,20 @@ class ReplayParser:
             "BuildForge":           7,
             "BuildStargate":        8,
             "BuildRoboticsFacility": 9,
-            "BuildTwilightCouncil": 11,
-            "BuildPhotonCannon":    12,
-            "BuildFleetBeacon":     13,
-            "BuildTemplarArchive":  14,
+            "BuildTwilightCouncil": 10,
+            "BuildPhotonCannon":    11,
+            "BuildFleetBeacon":     12,
+            "BuildTemplarArchive":  13,
             # Warp-ins
-            "WarpInZealot":         21,
-            "WarpInStalker":        22,
-            "WarpInHighTemplar":    23,
+            "WarpInZealot":         20,
+            "WarpInStalker":        21,
+            "WarpInHighTemplar":    22,
             # Research
-            "ResearchCharge":       25,
-            "ResearchWarpGate":     26,
+            "ResearchCharge":       24,
+            "ResearchWarpGate":     25,
             # Archon
-            "ArchonWarp":           24,
-            "MorphToArchon":        24,
+            "ArchonWarp":           23,
+            "MorphToArchon":        23,
         }
 
     def parse_replay(self, replay) -> list[tuple[list[float], int]]:

@@ -16,27 +16,26 @@ ACTIONS = [
     "build_forge",              # 7
     "build_stargate",           # 8
     "build_robotics_facility",  # 9
-    "build_nexus",              # 10
-    "build_twilight_council",   # 11
-    "build_photon_cannon",      # 12
-    "build_fleet_beacon",       # 13
-    "build_templar_archive",    # 14
-    "train_zealot",             # 15
-    "train_stalker",            # 16
-    "train_immortal",           # 17
-    "train_voidray",            # 18
-    "train_carrier",            # 19
-    "train_high_templar",       # 20
-    "warp_in_zealot",           # 21
-    "warp_in_stalker",          # 22
-    "warp_in_high_templar",     # 23
-    "archon_warp_selecton",     # 24
-    "research_charge",          # 25
-    "research_warp_gate",       # 26
-    "upgrade_ground_weapons",   # 27
-    "upgrade_air_weapons",      # 28
-    "upgrade_shields",          # 29
-    "attack_enemy_base",        # 30
+    "build_twilight_council",   # 10
+    "build_photon_cannon",      # 11
+    "build_fleet_beacon",       # 12
+    "build_templar_archive",    # 13
+    "train_zealot",             # 14
+    "train_stalker",            # 15
+    "train_immortal",           # 16
+    "train_voidray",            # 17
+    "train_carrier",            # 18
+    "train_high_templar",       # 19
+    "warp_in_zealot",           # 20
+    "warp_in_stalker",          # 21
+    "warp_in_high_templar",     # 22
+    "archon_warp_selecton",     # 23
+    "research_charge",          # 24
+    "research_warp_gate",       # 25
+    "upgrade_ground_weapons",   # 26
+    "upgrade_air_weapons",      # 27
+    "upgrade_shields",          # 28
+    "attack_enemy_base",        # 29
 ]
 
 ARMY = [
