@@ -41,13 +41,13 @@ class ObservationWrapper:
         self.observation_size = self.calculate_obs_size()
 
     def calculate_obs_size(self):
-        return len(PROTOSS_UNITS) + len(PROTOSS_STRUCTURES) + 9
+        return len(PROTOSS_UNITS) + len(PROTOSS_STRUCTURES) + 8
 
     def get_observation(self, bot, opponent):
         obs = []
 
-        # Game time (normalized to 10 min average game)
-        obs.append(bot.time / 600.0)
+        # Game time (normalized to 12 min average game)
+        obs.append(bot.time / 720.0)
 
         # Player resources (normalized)
         obs.append(bot.minerals / 1800.0)
@@ -71,6 +71,5 @@ class ObservationWrapper:
 
         # Opponent info (normalized)
         obs.append(opponent.supply_used / 200.0)
-        obs.append(opponent.supply_cap / 200.0)
 
         return obs
