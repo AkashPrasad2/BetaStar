@@ -79,15 +79,22 @@ class GameState:
 
     def update_from_stats(self, event: PlayerStatsEvent):
         self.time = event.second
-        self.minerals = event.minerals_current
-        self.vespene = event.vespene_current
-        self.supply_used = event.supply_used
-        # total supply cap provided by all supply structures
-        self.supply_cap = event.supply_made
+        # Handle different replay versions
+        self.minerals = getattr(event, 'minerals_current',
+                                getattr(event, 'minerals', 0))
+        self.vespene = getattr(event, 'vespene_current',
+                               getattr(event, 'vespene', 0))
+        self.supply_used = getattr(
+            event, 'supply_used', getattr(event, 'food_used', 0))
+        self.supply_cap = getattr(
+            event, 'supply_made', getattr(event, 'food_made', 0))
 
     def update_opp_from_stats(self, event: PlayerStatsEvent):
-        self.opp_supply_used = event.supply_used
-        self.opp_supply_cap = event.supply_made
+        # Handle different replay versions
+        self.opp_supply_used = getattr(
+            event, 'supply_used', getattr(event, 'food_used', 0))
+        self.opp_supply_cap = getattr(
+            event, 'supply_made', getattr(event, 'food_made', 0))
 
     def unit_born_or_done(self, unit_type_name: str):
         """Call when a unit/structure finishes construction or is born."""
@@ -281,11 +288,10 @@ class ReplayParser:
         print(f"\nTotal mapped samples: {sum(self.mapped_actions.values())}")
 
         if self.unmapped_abilities:
-            print("\nUnmapped Abilities (ignored):")
+            print("\nUnmapped Abilities (omitted from training data):")
             for ability, count in sorted(self.unmapped_abilities.items(), key=lambda x: -x[1]):
                 print(f"  {ability:30s}: {count:5d} occurrences")
             print(f"\nTotal unmapped: {sum(self.unmapped_abilities.values())}")
-            print("\nConsider adding these to EVENT_TO_ACTION if important!")
         else:
             print("\nNo unmapped abilities found!")
 
