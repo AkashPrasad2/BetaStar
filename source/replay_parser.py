@@ -1,13 +1,30 @@
 """
-SC2 Replay Parser — Sequence Dataset Builder
-=============================================
-Key changes from previous version:
-  - do_nothing (action 0) is NOT included in training sequences.
-    The model only sees real macro decisions in order. The bot handles
-    waiting implicitly by retrying failed actions each cooldown tick.
-  - In-progress structure and unit counts are tracked and included in
-    the observation vector, mirroring observation_wrapper.py exactly.
-  - OBS_SIZE updated to 53.
+SC2 Replay Parser — Fixed-Grid Sequence Dataset Builder
+========================================================
+Key change from event-driven version:
+
+  Observations are now sampled on a fixed temporal grid that matches the
+  live bot's cooldown cadence (GRID_INTERVAL_SECONDS). A row is added only
+  when a mapped macro action fires within a grid window — idle windows are
+  skipped entirely, so there is no do_nothing noise in the dataset.
+
+  This closes the training/inference distribution gap: the model now learns
+  "given the state at the start of an 8-second window, which macro action
+  (if any) should I take?" — exactly the question predict_action asks.
+
+Grid mechanics:
+  - Windows: [0, 8s), [8s, 16s), [16s, 24s), ...
+  - Obs snapshot: taken at the START of the window, before any events in it.
+    This is what the live bot observes when predict_action is called.
+  - Action label: the first mapped command that fires inside the window.
+    If multiple mapped commands fire, only the first is the label; all still
+    update pending-count state so subsequent snapshots stay accurate.
+  - Empty windows (no mapped action): skipped, not added as do_nothing.
+
+GRID_INTERVAL_SECONDS = 8 matches cooldown=44 at ~5.6 on_step/s ≈ 7.8s.
+Adjust if you change the bot cooldown.
+
+OBS_SIZE remains 53. Layout identical to observation_wrapper.py.
 """
 
 from collections import defaultdict
@@ -18,6 +35,12 @@ from sc2reader.events import (
     PlayerStatsEvent, UnitBornEvent, UnitDiedEvent,
     UnitDoneEvent, BasicCommandEvent,
 )
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+GRID_INTERVAL_SECONDS = 8  # change this if you change the bot cooldown
 
 STRUCTURE_NAME_MAP = {
     "Nexus":             "NEXUS",
@@ -59,7 +82,6 @@ UNITS = [
 
 OBS_SIZE = 53  # 6 base + 15 structures + 8 units + 15 pending structures + 8 pending units + 1 opp
 
-# Build command ability name -> structure key (for tracking pending structures)
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
     "BuildPylon":             "PYLON",
@@ -75,7 +97,6 @@ BUILD_COMMAND_TO_STRUCTURE = {
     "BuildFleetBeacon":       "FLEETBEACON",
 }
 
-# Train/warp command ability name -> unit key (for tracking pending units)
 TRAIN_COMMAND_TO_UNIT = {
     "TrainProbe":         "PROBE",
     "TrainZealot":        "ZEALOT",
@@ -93,16 +114,93 @@ MORPH_MAP = {
     "WarpGate": "GATEWAY",
 }
 
+# Obs feature indices for completed structures (must match observation_wrapper.py)
+_IDX_NEXUS = 6
+_IDX_PYLON = 7
+_IDX_GATEWAY = 8
+_IDX_WARPGATE = 9
+_IDX_FORGE = 10
+_IDX_TWILIGHTCOUNCIL = 11
+_IDX_PHOTONCANNON = 12
+_IDX_TEMPLARARCHIVE = 14
+_IDX_ROBOTICSFACILITY = 16
+_IDX_CYBERNETICSCORE = 18
+_IDX_STARGATE = 19
+_IDX_FLEETBEACON = 20
+_IDX_HIGHTEMPLAR = 24  # completed unit
+
+_EPS = 0.01  # > 0 but < 0.1 (= 1 structure normalised /10)
+
+
+def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
+    """
+    Pure-numpy mirror of action_mask.build_legal_mask for a single obs vector.
+    Used during parsing to discard rows where the label contradicts the mask,
+    which would cause log(0) = -inf loss during training.
+
+    Checks only completed structure/unit counts (indices 6-28), not pending,
+    because a structure under construction doesn't yet unlock tech.
+    """
+    has_nexus = obs[_IDX_NEXUS] > _EPS
+    has_pylon = obs[_IDX_PYLON] > _EPS
+    has_gateway = obs[_IDX_GATEWAY] > _EPS
+    has_warpgate = obs[_IDX_WARPGATE] > _EPS
+    has_forge = obs[_IDX_FORGE] > _EPS
+    has_twilight = obs[_IDX_TWILIGHTCOUNCIL] > _EPS
+    has_temparch = obs[_IDX_TEMPLARARCHIVE] > _EPS
+    has_robofac = obs[_IDX_ROBOTICSFACILITY] > _EPS
+    has_cybcore = obs[_IDX_CYBERNETICSCORE] > _EPS
+    has_stargate = obs[_IDX_STARGATE] > _EPS
+    has_fleet = obs[_IDX_FLEETBEACON] > _EPS
+    has_2ht = obs[_IDX_HIGHTEMPLAR] > (1.5 / 30.0)
+
+    # Any combat unit present (needed for attack action)
+    # indices 22-28 are zealot, stalker, hightemplar, archon, immortal, carrier, voidray
+    has_army = any(obs[i] > _EPS for i in range(22, 29))
+
+    rules = {
+        0:  True,                             # do_nothing
+        1:  has_nexus,                        # train_probe
+        2:  True,                             # build_pylon
+        3:  has_pylon,                        # build_gateway
+        4:  has_gateway,                      # build_cyberneticscore
+        5:  has_nexus,                        # build_assimilator
+        6:  True,                             # build_nexus
+        7:  has_pylon,                        # build_forge
+        8:  has_cybcore,                      # build_stargate
+        9:  has_cybcore,                      # build_robotics_facility
+        10: has_cybcore,                      # build_twilight_council
+        11: has_forge,                        # build_photon_cannon
+        12: has_stargate,                     # build_fleet_beacon
+        13: has_twilight,                     # build_templar_archive
+        14: has_gateway,                      # train_zealot
+        15: has_gateway and has_cybcore,      # train_stalker
+        16: has_robofac,                      # train_immortal
+        17: has_stargate,                     # train_voidray
+        18: has_stargate and has_fleet,       # train_carrier
+        19: has_gateway and has_temparch,     # train_high_templar
+        20: has_warpgate,                     # warp_in_zealot
+        21: has_warpgate and has_cybcore,     # warp_in_stalker
+        22: has_warpgate and has_temparch,    # warp_in_high_templar
+        23: has_2ht,                          # archon_warp
+        24: has_twilight,                     # research_charge
+        25: has_cybcore,                      # research_warp_gate
+        26: has_forge,                        # upgrade_ground_weapons
+        27: has_cybcore,                      # upgrade_air_weapons
+        28: has_forge,                        # upgrade_shields
+        29: has_army,                         # attack_enemy_base
+    }
+    return rules.get(action_id, False)
+
+
+# ---------------------------------------------------------------------------
+# GameState — unchanged from original
+# ---------------------------------------------------------------------------
 
 class GameState:
     """
     Tracks full Protoss game state including in-progress counts.
-
-    pending_structures: incremented on build command, decremented on UnitDoneEvent.
-    pending_units:      incremented on train command, decremented on UnitBornEvent.
-
-    This mirrors what python-sc2's already_pending() returns in the live bot,
-    giving the model consistent features between training and inference.
+    Identical to original; kept here so the parser is self-contained.
     """
 
     def __init__(self):
@@ -127,14 +225,14 @@ class GameState:
                                 getattr(event, "minerals", 0))
         self.vespene = getattr(event, "vespene_current",
                                getattr(event, "vespene",  0))
-        self.supply_used = getattr(
-            event, "supply_used",      getattr(event, "food_used", 0))
-        self.supply_cap = getattr(
-            event, "supply_made",      getattr(event, "food_made", 0))
+        self.supply_used = getattr(event, "supply_used",
+                                   getattr(event, "food_used", 0))
+        self.supply_cap = getattr(event, "supply_made",
+                                  getattr(event, "food_made", 0))
 
     def update_opp_from_stats(self, event: PlayerStatsEvent):
-        self.opp_supply_used = getattr(
-            event, "supply_used", getattr(event, "food_used", 0))
+        self.opp_supply_used = getattr(event, "supply_used",
+                                       getattr(event, "food_used", 0))
 
     def on_build_command(self, ability_name: str):
         key = BUILD_COMMAND_TO_STRUCTURE.get(ability_name)
@@ -147,13 +245,11 @@ class GameState:
             self.pending_units[key] += 1
 
     def unit_born_or_done(self, unit_type_name: str):
-        """Moves a unit/structure from pending to completed."""
         unit_key = UNIT_NAME_MAP.get(unit_type_name)
         structure_key = STRUCTURE_NAME_MAP.get(unit_type_name)
 
         if unit_key:
             self.counts[unit_key] += 1
-            # Clamp to 0 to handle starting probes whose train commands aren't in the replay
             self.pending_units[unit_key] = max(
                 0, self.pending_units[unit_key] - 1)
 
@@ -172,21 +268,18 @@ class GameState:
         if key:
             self.counts[key] = max(0, self.counts[key] - 1)
 
-    def to_obs(self) -> list[float]:
+    def to_obs(self, override_time: float | None = None) -> list[float]:
         """
-        Serialize to the same flat vector as ObservationWrapper.get_observation().
-
-        Layout (53 floats):
-            time, minerals, vespene, supply_used, supply_cap, worker_saturation,
-            [15 completed structures], [8 completed units],
-            [15 pending structures],   [8 pending units],
-            opp_supply_used
+        Serialize to flat vector matching ObservationWrapper.get_observation().
+        override_time lets the caller pass the exact grid-boundary time rather
+        than relying on the last PlayerStatsEvent time.
         """
+        t = override_time if override_time is not None else self.time
         ideal_workers = max(self.counts["NEXUS"], 1) * 22
         worker_saturation = self.counts["PROBE"] / ideal_workers
 
         obs = [
-            self.time / 720.0,
+            t / 720.0,
             self.minerals / 1800.0,
             self.vespene / 700.0,
             self.supply_used / 200.0,
@@ -204,18 +297,25 @@ class GameState:
         obs.append(self.opp_supply_used / 200.0)
 
         assert len(
-            obs) == OBS_SIZE, f"Obs size mismatch: got {len(obs)}, expected {OBS_SIZE}"
+            obs) == OBS_SIZE, f"Obs size mismatch: {len(obs)} vs {OBS_SIZE}"
         return obs
 
 
+# ---------------------------------------------------------------------------
+# ReplayParser
+# ---------------------------------------------------------------------------
+
 class ReplayParser:
     """
-    Parses SC2 replays into ordered action sequences for LSTM training.
+    Parses SC2 replays into fixed-grid sequence arrays for LSTM training.
 
-    Each replay becomes one (T, OBS_SIZE+1) array where every row is a
-    real macro decision — do_nothing is never recorded. The LSTM learns
-    the sequence of decisions directly; waiting is handled implicitly
-    by the bot retrying failed actions on each cooldown tick.
+    Each replay becomes one (T, OBS_SIZE+1) array where:
+      - T   = number of grid windows that contained at least one macro action.
+      - row = [obs_at_window_start (53 floats), action_id (1 float)]
+
+    The obs snapshot uses the game time at the window START (override_time),
+    so the time feature is always exactly aligned with the grid — not
+    dependent on when the last PlayerStatsEvent happened to fire.
     """
 
     def __init__(
@@ -230,8 +330,8 @@ class ReplayParser:
 
         self.unmapped_abilities = defaultdict(int)
         self.mapped_actions = defaultdict(int)
+        self.conflicts_dropped = 0   # rows where label contradicts legal mask
 
-        # Only real macro decisions — no do_nothing
         self.EVENT_TO_ACTION = {
             "TrainProbe":             1,
             "BuildPylon":             2,
@@ -261,12 +361,24 @@ class ReplayParser:
             "ResearchWarpGate":      25,
         }
 
+    # ------------------------------------------------------------------
+    # Core parse logic
+    # ------------------------------------------------------------------
+
     def parse_replay(self, replay, min_length: int = 10) -> np.ndarray | None:
         """
-        Walk all events chronologically and record one row per real macro action.
-        The obs snapshot is taken AFTER updating pending counts so the observation
-        already reflects that the issued command is now in progress.
-        Returns float32 array of shape (T, OBS_SIZE+1), or None if too short.
+        Walk replay events on a fixed GRID_INTERVAL_SECONDS grid.
+
+        Algorithm:
+          1. Walk all events chronologically, maintaining GameState.
+          2. Whenever an event's timestamp crosses into a new grid window,
+             snapshot the current state at that window's START time.
+          3. For BasicCommandEvents: always update pending counts.
+             If the command maps to a known action AND this window doesn't
+             already have a label, record it as this window's action.
+          4. After the loop, emit one row per window that has a label.
+
+        Returns float32 array (T, OBS_SIZE+1), or None if T < min_length.
         """
         protoss_player = None
         zerg_player = None
@@ -281,11 +393,33 @@ class ReplayParser:
 
         pid = protoss_player.pid
         opp_pid = zerg_player.pid
+
         state = GameState()
-        rows = []
+        G = GRID_INTERVAL_SECONDS
+
+        # grid_obs[i]    = obs snapshot at the START of window i (time = i*G)
+        # grid_actions[i] = action_id of the first mapped command in window i
+        grid_obs = {}
+        grid_actions = {}
+
+        current_grid = 0
+        # Snapshot window 0 from the initial (pre-event) state
+        grid_obs[0] = state.to_obs(override_time=0.0)
 
         for event in replay.events:
+            t = event.second
 
+            # --- Advance grid snapshots ---
+            # Before processing this event, snapshot the start of every new
+            # grid window we've entered.  The snapshot captures state AFTER
+            # all events from prior windows but BEFORE events in this window.
+            new_grid = int(t / G)
+            while current_grid < new_grid:
+                current_grid += 1
+                grid_obs[current_grid] = state.to_obs(
+                    override_time=float(current_grid * G))
+
+            # --- Update game state ---
             if isinstance(event, PlayerStatsEvent):
                 if event.player.pid == pid:
                     state.update_from_stats(event)
@@ -312,27 +446,47 @@ class ReplayParser:
 
                 ability_name = event.ability_name
 
-                # Update pending counts for ALL commands, not just mapped ones,
-                # so the state stays accurate even for actions we don't train on
+                # Always update pending counts for state accuracy
                 state.on_build_command(ability_name)
                 state.on_train_command(ability_name)
 
                 action_id = self.EVENT_TO_ACTION.get(ability_name)
                 if action_id is not None:
-                    # Snapshot AFTER pending update — obs now shows this
-                    # building/unit as in-progress, which is what the bot
-                    # will see at the moment it issues the same command
-                    rows.append(state.to_obs() + [float(action_id)])
-                    self.mapped_actions[ability_name] += 1
+                    # First mapped action in this window wins; later ones
+                    # are dropped as labels (but state was already updated)
+                    window = int(t / G)
+                    if window not in grid_actions:
+                        grid_actions[window] = action_id
+                        self.mapped_actions[ability_name] += 1
+                    # else: second action in same window — state updated, label ignored
                 else:
                     self.unmapped_abilities[ability_name] += 1
                     if self.debug and self.unmapped_abilities[ability_name] == 1:
                         print(f"    [UNMAPPED] {ability_name}")
 
+        # --- Build rows ---
+        # Emit one (obs, action) row per window that had a mapped action,
+        # in chronological order.  Skip any row where the action contradicts
+        # the legal mask — those cause log(0) = -inf loss during training.
+        rows = []
+        for window in sorted(grid_actions.keys()):
+            obs = grid_obs.get(window)
+            if obs is None:
+                continue
+            action_id = grid_actions[window]
+            if not _action_legal_numpy(obs, action_id):
+                self.conflicts_dropped += 1
+                continue
+            rows.append(obs + [float(action_id)])
+
         if len(rows) < min_length:
             return None
 
         return np.array(rows, dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
 
     def print_statistics(self):
         print("\n" + "=" * 60)
@@ -342,7 +496,8 @@ class ReplayParser:
         for ability, count in sorted(self.mapped_actions.items(), key=lambda x: -x[1]):
             action_id = self.EVENT_TO_ACTION.get(ability, 0)
             print(f"  [{action_id:2d}] {ability:30s}: {count:5d} samples")
-        print(f"\nTotal mapped samples: {sum(self.mapped_actions.values())}")
+        total = sum(self.mapped_actions.values())
+        print(f"\nTotal mapped samples: {total}")
         if self.unmapped_abilities:
             print("\nUnmapped Abilities (omitted):")
             for ability, count in sorted(self.unmapped_abilities.items(), key=lambda x: -x[1]):
@@ -350,15 +505,22 @@ class ReplayParser:
         else:
             print("\nNo unmapped abilities found!")
 
+    # ------------------------------------------------------------------
+    # Folder processing
+    # ------------------------------------------------------------------
+
     def parse_replay_folder(self):
         sequences = []
         bot_replays = []
         skipped = 0
         failed = 0
 
-        replay_files = [f for f in os.listdir(
-            self.replay_folder) if f.endswith(".SC2Replay")]
+        replay_files = [
+            f for f in os.listdir(self.replay_folder) if f.endswith(".SC2Replay")
+        ]
         print(f"Found {len(replay_files)} replay(s) to process.")
+        print(f"Grid interval: {GRID_INTERVAL_SECONDS}s "
+              f"(change GRID_INTERVAL_SECONDS to match bot cooldown)\n")
 
         for fname in replay_files:
             path = os.path.join(self.replay_folder, fname)
@@ -382,7 +544,7 @@ class ReplayParser:
                     continue
 
                 sequences.append(seq)
-                print(f"  {fname}: {len(seq)} actions")
+                print(f"  {fname}: {len(seq)} action windows")
 
             except Exception as e:
                 print(f"  FAILED {fname}: {e}")
@@ -401,14 +563,23 @@ class ReplayParser:
 
         total_steps = sum(len(s) for s in sequences)
         lengths = [len(s) for s in sequences]
+
         print(
-            f"\nDone. {len(sequences)} sequences | {total_steps} total actions")
-        print(
-            f"Sequence lengths: min={min(lengths)}, max={max(lengths)}, mean={np.mean(lengths):.0f}")
+            f"\nDone. {len(sequences)} sequences | {total_steps} total action windows")
+        print(f"Sequence lengths: min={min(lengths)}, max={max(lengths)}, "
+              f"mean={np.mean(lengths):.0f}")
+
+        # Sanity check: average seconds per action window
+        # (total game time across replays / total action windows)
+        # Should be close to GRID_INTERVAL_SECONDS * some coverage factor
+        print(f"\nApprox. actions per game minute (mean seq length × "
+              f"{GRID_INTERVAL_SECONDS}s / 60): "
+              f"{np.mean(lengths) * GRID_INTERVAL_SECONDS / 60:.1f}")
+
         print(f"Skipped: {skipped}  |  Failed: {failed}")
         if bot_replays:
             print(f"Bot replays skipped: {bot_replays}")
-        print(f"Saved to: {self.output_file}")
+        print(f"\nSaved to: {self.output_file}")
         self.print_statistics()
 
 

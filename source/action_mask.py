@@ -61,6 +61,18 @@ IDX_VOIDRAY = 28
 # 0.01 is safely above zero but below 0.1 (= 1 structure).
 EPS = 0.01
 
+# Supply costs for units (unnormalized)
+SUPPLY_COSTS = {
+    'PROBE': 1,
+    'ZEALOT': 2,
+    'STALKER': 2,
+    'HIGHTEMPLAR': 2,
+    'ARCHON': 4,
+    'IMMORTAL': 4,
+    'CARRIER': 6,
+    'VOIDRAY': 4,
+}
+
 
 def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     """
@@ -84,6 +96,11 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     N = obs.shape[0]
     device = obs.device
     mask = torch.zeros(N, NUM_ACTIONS, dtype=torch.bool, device=device)
+
+    # Supply check: obs indices 3 and 4 are supply_used and supply_cap (normalized /200)
+    supply_used = obs[:, 3] * 200.0
+    supply_cap = obs[:, 4] * 200.0
+    supply_available = supply_cap - supply_used
 
     has_nexus = obs[:, IDX_NEXUS] > EPS
     has_pylon = obs[:, IDX_PYLON] > EPS
@@ -114,8 +131,8 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 0: do_nothing — always legal
     mask[:, 0] = True
 
-    # Action 1: train_probe — needs a ready Nexus
-    mask[:, 1] = has_nexus
+    # Action 1: train_probe — needs a ready Nexus + supply
+    mask[:, 1] = has_nexus & (supply_available >= SUPPLY_COSTS['PROBE'])
 
     # Action 2: build_pylon — always legal (just needs minerals)
     mask[:, 2] = True
@@ -154,32 +171,32 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 13: build_templar_archive — needs Twilight Council
     mask[:, 13] = has_twilight
 
-    # Action 14: train_zealot — needs a ready Gateway
-    mask[:, 14] = has_gateway
+    # Action 14: train_zealot — needs a ready Gateway + supply
+    mask[:, 14] = has_gateway & (supply_available >= SUPPLY_COSTS['ZEALOT'])
 
-    # Action 15: train_stalker — needs Gateway + Cybernetics Core
-    mask[:, 15] = has_gateway & has_cybcore
+    # Action 15: train_stalker — needs Gateway + Cybernetics Core + supply
+    mask[:, 15] = has_gateway & has_cybcore & (supply_available >= SUPPLY_COSTS['STALKER'])
 
-    # Action 16: train_immortal — needs Robotics Facility
-    mask[:, 16] = has_robofac
+    # Action 16: train_immortal — needs Robotics Facility + supply
+    mask[:, 16] = has_robofac & (supply_available >= SUPPLY_COSTS['IMMORTAL'])
 
-    # Action 17: train_voidray — needs Stargate
-    mask[:, 17] = has_stargate
+    # Action 17: train_voidray — needs Stargate + supply
+    mask[:, 17] = has_stargate & (supply_available >= SUPPLY_COSTS['VOIDRAY'])
 
-    # Action 18: train_carrier — needs Stargate + Fleet Beacon
-    mask[:, 18] = has_stargate & has_fleetbeacon
+    # Action 18: train_carrier — needs Stargate + Fleet Beacon + supply
+    mask[:, 18] = has_stargate & has_fleetbeacon & (supply_available >= SUPPLY_COSTS['CARRIER'])
 
-    # Action 19: train_high_templar — needs Gateway + Templar Archive
-    mask[:, 19] = has_gateway & has_templar_archive
+    # Action 19: train_high_templar — needs Gateway + Templar Archive + supply
+    mask[:, 19] = has_gateway & has_templar_archive & (supply_available >= SUPPLY_COSTS['HIGHTEMPLAR'])
 
-    # Action 20: warp_in_zealot — needs a ready Warpgate
-    mask[:, 20] = has_warpgate
+    # Action 20: warp_in_zealot — needs a ready Warpgate + supply
+    mask[:, 20] = has_warpgate & (supply_available >= SUPPLY_COSTS['ZEALOT'])
 
-    # Action 21: warp_in_stalker — needs Warpgate + Cybernetics Core
-    mask[:, 21] = has_warpgate & has_cybcore
+    # Action 21: warp_in_stalker — needs Warpgate + Cybernetics Core + supply
+    mask[:, 21] = has_warpgate & has_cybcore & (supply_available >= SUPPLY_COSTS['STALKER'])
 
-    # Action 22: warp_in_high_templar — needs Warpgate + Templar Archive
-    mask[:, 22] = has_warpgate & has_templar_archive
+    # Action 22: warp_in_high_templar — needs Warpgate + Templar Archive + supply
+    mask[:, 22] = has_warpgate & has_templar_archive & (supply_available >= SUPPLY_COSTS['HIGHTEMPLAR'])
 
     # Action 23: archon_warp — needs 2+ idle High Templars to merge
     mask[:, 23] = has_2_hightemplar

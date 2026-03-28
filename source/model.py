@@ -275,11 +275,27 @@ def eval_epoch(model, loader, criterion, device):
     return total_loss / total, correct / total
 
 
+def check_mask_label_conflicts(dataset, device="cpu"):
+    from action_mask import build_legal_mask
+    conflicts = 0
+    for obs_seq, act_seq in dataset.sequences:
+        obs_flat = obs_seq  # (T, OBS_SIZE)
+        mask = build_legal_mask(obs_flat.to(device))  # (T, NUM_ACTIONS)
+        for t in range(len(act_seq)):
+            a = act_seq[t].item()
+            if a >= 0 and not mask[t, a]:
+                conflicts += 1
+    print(
+        f"Mask/label conflicts: {conflicts} / {sum(len(s[1]) for s in dataset.sequences)}")
+
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
 
+
 def train():
+    check_mask_label_conflicts(SequenceDataset(DATASET_PATH))
+
     torch.manual_seed(SEED)
     np.random.seed(SEED)
 
