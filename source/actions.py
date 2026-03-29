@@ -131,8 +131,7 @@ async def execute_action(action_id: int, bot: BotAI):
         if bot.can_afford(UnitTypeId.ZEALOT) and bot.structures(UnitTypeId.WARPGATE).ready:
             abilities = await bot.get_available_abilities(
                 bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.WARP_ZEALOT in abilities:
-                # find the closest pylon
+            if AbilityId.WARPGATETRAIN_ZEALOT in abilities:
                 pylon = bot.structures(UnitTypeId.PYLON).closest_to(
                     bot.structures(UnitTypeId.WARPGATE).ready.first)
                 bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
@@ -142,8 +141,7 @@ async def execute_action(action_id: int, bot: BotAI):
         if bot.can_afford(UnitTypeId.STALKER) and bot.structures(UnitTypeId.WARPGATE).ready:
             abilities = await bot.get_available_abilities(
                 bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.WARP_STALKER in abilities:
-                # find the closest pylon
+            if AbilityId.WARPGATETRAIN_STALKER in abilities:
                 pylon = bot.structures(UnitTypeId.PYLON).closest_to(
                     bot.structures(UnitTypeId.WARPGATE).ready.first)
                 bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
@@ -153,8 +151,7 @@ async def execute_action(action_id: int, bot: BotAI):
         if bot.can_afford(UnitTypeId.HIGHTEMPLAR) and bot.structures(UnitTypeId.WARPGATE).ready and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready:
             abilities = await bot.get_available_abilities(
                 bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.WARP_HIGHTEMPLAR in abilities:
-                # find the closest pylon
+            if AbilityId.WARPGATETRAIN_HIGHTEMPLAR in abilities:
                 pylon = bot.structures(UnitTypeId.PYLON).closest_to(
                     bot.structures(UnitTypeId.WARPGATE).ready.first)
                 bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
