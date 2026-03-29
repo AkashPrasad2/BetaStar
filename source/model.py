@@ -210,6 +210,34 @@ def compute_class_weights(
     return torch.tensor(weights, dtype=torch.float32)
 
 
+def _apply_mask_real_only(
+    flat_logits: torch.Tensor,
+    flat_obs:    torch.Tensor,
+    flat_acts:   torch.Tensor,
+) -> torch.Tensor:
+    """
+    Apply the legal mask only to real (non-padded) positions.
+
+    Padded positions have flat_acts == -100.  Their logits are never used
+    in the loss (ignore_index=-100) so masking them is unnecessary — and
+    masking them with obs=0 (all-zero padding) can produce all-(-inf) rows
+    if do_nothing somehow gets blocked, causing NaN in softmax.
+
+    We clone the full tensor and only write -inf into real positions that
+    are actually illegal, leaving padded rows completely untouched.
+    """
+    real_mask = flat_acts != -100                        # (B*T,) bool
+    masked = flat_logits.clone()
+
+    if real_mask.any():
+        real_logits = flat_logits[real_mask]             # (N_real, A)
+        real_obs = flat_obs[real_mask]                # (N_real, OBS_SIZE)
+        real_logits = apply_legal_mask(real_logits, real_obs)
+        masked[real_mask] = real_logits
+
+    return masked
+
+
 def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
@@ -225,19 +253,34 @@ def train_epoch(model, loader, optimizer, criterion, device):
         B, T, A = logits.shape
         flat_logits = logits.reshape(B * T, A)
         flat_obs = obs_pad.reshape(B * T, obs_pad.shape[-1])
-
-        # Apply the same legal mask used at inference time.
-        # Illegal-action logits become -inf → zero probability after softmax.
-        # Padded positions (obs=0) still have do_nothing legal so no NaN risk.
-        flat_logits = apply_legal_mask(flat_logits, flat_obs)
-
         flat_acts = act_pad.reshape(B * T)
+
+        flat_logits = _apply_mask_real_only(flat_logits, flat_obs, flat_acts)
+
+        # Safety check — any remaining -inf on a real position means the label
+        # contradicts the mask. Rather than clamping (which explodes the loss
+        # via class weights * 1e9), silence those positions by setting their
+        # label to -100 so CrossEntropyLoss ignores them, same as padding.
+        real = flat_acts != -100
+        if real.any():
+            real_idx = real.nonzero(as_tuple=True)[0]
+            label_logits = flat_logits[real_idx].gather(
+                1, flat_acts[real_idx].unsqueeze(1))
+            bad = ~label_logits[:, 0].isfinite()
+            if bad.any():
+                n_bad = bad.sum().item()
+                print(f"  [WARN] {n_bad} label/mask conflicts remain in dataset "
+                      f"— silencing those positions. Run conflict_diagnostic.py.")
+                bad_idx = real_idx[bad]
+                flat_acts = flat_acts.clone()
+                flat_acts[bad_idx] = -100
+
         loss = criterion(flat_logits, flat_acts)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        mask = flat_acts != -100
+        mask = real
         preds = flat_logits.argmax(1)
         correct += (preds[mask] == flat_acts[mask]).sum().item()
         total += mask.sum().item()
@@ -261,41 +304,36 @@ def eval_epoch(model, loader, criterion, device):
         B, T, A = logits.shape
         flat_logits = logits.reshape(B * T, A)
         flat_obs = obs_pad.reshape(B * T, obs_pad.shape[-1])
-        flat_logits = apply_legal_mask(flat_logits, flat_obs)
-
         flat_acts = act_pad.reshape(B * T)
+
+        flat_logits = _apply_mask_real_only(flat_logits, flat_obs, flat_acts)
+
+        # Same silence-on-conflict as train_epoch
+        real = flat_acts != -100
+        if real.any():
+            real_idx = real.nonzero(as_tuple=True)[0]
+            label_logits = flat_logits[real_idx].gather(
+                1, flat_acts[real_idx].unsqueeze(1))
+            bad = ~label_logits[:, 0].isfinite()
+            if bad.any():
+                flat_acts = flat_acts.clone()
+                flat_acts[real_idx[bad]] = -100
+
         loss = criterion(flat_logits, flat_acts)
 
-        mask = flat_acts != -100
         preds = flat_logits.argmax(1)
-        correct += (preds[mask] == flat_acts[mask]).sum().item()
-        total += mask.sum().item()
-        total_loss += loss.item() * mask.sum().item()
+        correct += (preds[real] == flat_acts[real]).sum().item()
+        total += real.sum().item()
+        total_loss += loss.item() * real.sum().item()
 
     return total_loss / total, correct / total
 
-
-def check_mask_label_conflicts(dataset, device="cpu"):
-    from action_mask import build_legal_mask
-    conflicts = 0
-    for obs_seq, act_seq in dataset.sequences:
-        obs_flat = obs_seq  # (T, OBS_SIZE)
-        mask = build_legal_mask(obs_flat.to(device))  # (T, NUM_ACTIONS)
-        for t in range(len(act_seq)):
-            a = act_seq[t].item()
-            if a >= 0 and not mask[t, a]:
-                conflicts += 1
-    print(
-        f"Mask/label conflicts: {conflicts} / {sum(len(s[1]) for s in dataset.sequences)}")
 
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
 
-
 def train():
-    check_mask_label_conflicts(SequenceDataset(DATASET_PATH))
-
     torch.manual_seed(SEED)
     np.random.seed(SEED)
 
