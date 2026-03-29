@@ -205,7 +205,7 @@ def compute_class_weights(
         for a in act_seq.numpy():
             counts[int(a)] += 1
     counts = np.where(counts == 0, 1.0, counts)
-    weights = 1.0 / np.sqrt(counts)   # sqrt dampens extremes vs plain 1/n
+    weights = 1.0 / counts   # sqrt dampens extremes vs plain 1/n
     weights /= weights.sum()
     return torch.tensor(weights, dtype=torch.float32)
 
@@ -269,8 +269,8 @@ def train_epoch(model, loader, optimizer, criterion, device):
             bad = ~label_logits[:, 0].isfinite()
             if bad.any():
                 n_bad = bad.sum().item()
-                print(f"  [WARN] {n_bad} label/mask conflicts remain in dataset "
-                      f"— silencing those positions. Run conflict_diagnostic.py.")
+                # print(f"  [WARN] {n_bad} label/mask conflicts remain in dataset "
+                #       f"— silencing those positions. Run conflict_diagnostic.py.")
                 bad_idx = real_idx[bad]
                 flat_acts = flat_acts.clone()
                 flat_acts[bad_idx] = -100
