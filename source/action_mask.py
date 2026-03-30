@@ -1,14 +1,14 @@
 """
-action_mask.py — Shared mask for training and inference
+action_mask.py — Shared prerequisite mask for training and inference
 ====================================================================
-Determins if an action is legal or not. Added so that the model will only make legal moves
-Imported by model.py (for training) and protoss_bot.py (for inference).
+Single source of truth for which actions are legal given an observation.
+Imported by model.py (training loop) and protoss_bot.py (inference).
 
 Applying the same mask in both places ensures the model learns to
 distribute probability only over legal actions — so the conditional
 probabilities are calibrated for exactly the distribution seen at runtime.
 
-Observation layout (53 features, matching observation_wrapper.py):
+Observation layout (57 features, matching observation_wrapper.py):
     [0]     game time
     [1]     minerals
     [2]     vespene
@@ -20,6 +20,10 @@ Observation layout (53 features, matching observation_wrapper.py):
     [29:44] pending structure counts    (15 structures, normalised /10)
     [44:52] pending unit counts         (8 units,       normalised /30)
     [52]    opponent supply_used
+    [53]    idle gateway+warpgate count (normalised /5)
+    [54]    idle stargate count         (normalised /5)
+    [55]    idle robotics facility count(normalised /5)
+    [56]    idle warpgate count         (normalised /5)
 """
 
 import torch
@@ -63,25 +67,16 @@ IDX_VOIDRAY = 28
 IDX_PENDING_PROBE = 44
 
 # ---------------------------------------------------------------------------
-# Obs feature indices — pending structure counts
+# Obs feature indices — idle production building counts
 # ---------------------------------------------------------------------------
-IDX_PENDING_NEXUS = 29  # First in pending structures section
+IDX_IDLE_GW_WG = 53   # idle gateway + warpgate combined
+IDX_IDLE_SG = 54   # idle stargates
+IDX_IDLE_ROBO = 55   # idle robotics facilities
+IDX_IDLE_WG = 56   # idle warpgates specifically
 
 # Threshold: structures are normalised /10, units /30.
 # 0.01 is safely above zero but below 0.1 (= 1 structure).
 EPS = 0.01
-
-# Supply costs for units (unnormalized)
-SUPPLY_COSTS = {
-    'PROBE': 1,
-    'ZEALOT': 2,
-    'STALKER': 2,
-    'HIGHTEMPLAR': 2,
-    'ARCHON': 4,
-    'IMMORTAL': 4,
-    'CARRIER': 6,
-    'VOIDRAY': 4,
-}
 
 
 def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
@@ -107,16 +102,7 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     device = obs.device
     mask = torch.zeros(N, NUM_ACTIONS, dtype=torch.bool, device=device)
 
-    # Supply check: obs indices 3 and 4 are supply_used and supply_cap (normalized /200)
-    supply_used = obs[:, 3] * 200.0
-    supply_cap = obs[:, 4] * 200.0
-    supply_available = supply_cap - supply_used
-
     has_nexus = obs[:, IDX_NEXUS] > EPS
-    nexus_count = obs[:, IDX_NEXUS] * 10.0  # Denormalize
-    pending_nexus = obs[:, IDX_PENDING_NEXUS] * 10.0  # Denormalize
-    total_nexus = nexus_count + pending_nexus
-    pending_probes = obs[:, IDX_PENDING_PROBE] * 30.0  # Denormalize
     has_pylon = obs[:, IDX_PYLON] > EPS
     has_gateway = obs[:, IDX_GATEWAY] > EPS
     has_warpgate = obs[:, IDX_WARPGATE] > EPS
@@ -127,6 +113,24 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     has_cybcore = obs[:, IDX_CYBERNETICSCORE] > EPS
     has_stargate = obs[:, IDX_STARGATE] > EPS
     has_fleetbeacon = obs[:, IDX_FLEETBEACON] > EPS
+
+    # Probe queue cap: allow train_probe only if fewer than 2 are pending
+    # per nexus. pending probe count is at IDX_PENDING_PROBE, normalised /30.
+    # nexus count is at IDX_NEXUS, normalised /10.
+    # Cap: pending_probes < 2 * nexus_count  (max 2 queued per nexus)
+    pending_probes = obs[:, IDX_PENDING_PROBE] * 30.0
+    nexus_count = obs[:, IDX_NEXUS] * 10.0
+    probe_queue_ok = pending_probes < (2.0 * nexus_count)
+
+    # Idle building checks — unit training only makes sense if a building
+    # is actually available (not already busy). Uses the derived idle counts.
+    # idle > 0 means (idle_count / 5) > 0, i.e. > 1/5 of a building.
+    # We use a small epsilon here because floating point rounding on the
+    # normalised value may produce something like 0.199 instead of 0.2.
+    has_idle_gw_wg = obs[:, IDX_IDLE_GW_WG] > (0.5 / 5.0)   # at least 1 idle
+    has_idle_sg = obs[:, IDX_IDLE_SG] > (0.5 / 5.0)
+    has_idle_robo = obs[:, IDX_IDLE_ROBO] > (0.5 / 5.0)
+    has_idle_wg = obs[:, IDX_IDLE_WG] > (0.5 / 5.0)
 
     # 2+ idle high templar needed to merge into archon (units normalised /30)
     has_2_hightemplar = obs[:, IDX_HIGHTEMPLAR] > (1.5 / 30.0)
@@ -145,10 +149,8 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 0: do_nothing — always legal
     mask[:, 0] = True
 
-    # Action 1: train_probe — needs Nexus + supply + not already queued at every Nexus
-    # Only allow training if pending_probes < nexus_count (max 1 probe per Nexus)
-    mask[:, 1] = has_nexus & (supply_available >= SUPPLY_COSTS['PROBE']) & (
-        pending_probes < 2*nexus_count)
+    # Action 1: train_probe — needs Nexus, queue must have room
+    mask[:, 1] = has_nexus & probe_queue_ok
 
     # Action 2: build_pylon — always legal (just needs minerals)
     mask[:, 2] = True
@@ -159,12 +161,12 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 4: build_cyberneticscore — needs a Gateway
     mask[:, 4] = has_gateway
 
-    # Action 5: build_assimilator — needs a Nexus (geysers must exist nearby,
-    #           but we can't check that from obs; Nexus is the binding req)
+    # Action 5: build_assimilator — needs a Nexus
     mask[:, 5] = has_nexus
 
-    # Action 6: build_nexus — cap at 3 total (completed + in-progress)
-    mask[:, 6] = total_nexus < 3
+    # Action 6: build_nexus — always legal
+    mask[:, 6] = True
+
     # Action 7: build_forge — needs Pylon for power
     mask[:, 7] = has_pylon
 
@@ -186,37 +188,32 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 13: build_templar_archive — needs Twilight Council
     mask[:, 13] = has_twilight
 
-    # Action 14: train_zealot — needs a ready Gateway + supply
-    mask[:, 14] = has_gateway & (supply_available >= SUPPLY_COSTS['ZEALOT'])
+    # Action 14: train_zealot — needs idle Gateway
+    mask[:, 14] = has_idle_gw_wg
 
-    # Action 15: train_stalker — needs Gateway + Cybernetics Core + supply
-    mask[:, 15] = has_gateway & has_cybcore & (
-        supply_available >= SUPPLY_COSTS['STALKER'])
+    # Action 15: train_stalker — needs idle Gateway + Cybernetics Core
+    mask[:, 15] = has_idle_gw_wg & has_cybcore
 
-    # Action 16: train_immortal — needs Robotics Facility + supply
-    mask[:, 16] = has_robofac & (supply_available >= SUPPLY_COSTS['IMMORTAL'])
+    # Action 16: train_immortal — needs idle Robotics Facility
+    mask[:, 16] = has_idle_robo
 
-    # Action 17: train_voidray — needs Stargate + supply
-    mask[:, 17] = has_stargate & (supply_available >= SUPPLY_COSTS['VOIDRAY'])
+    # Action 17: train_voidray — needs idle Stargate
+    mask[:, 17] = has_idle_sg
 
-    # Action 18: train_carrier — needs Stargate + Fleet Beacon + supply
-    mask[:, 18] = has_stargate & has_fleetbeacon & (
-        supply_available >= SUPPLY_COSTS['CARRIER'])
+    # Action 18: train_carrier — needs idle Stargate + Fleet Beacon
+    mask[:, 18] = has_idle_sg & has_fleetbeacon
 
-    # Action 19: train_high_templar — needs Gateway + Templar Archive + supply
-    mask[:, 19] = has_gateway & has_templar_archive & (
-        supply_available >= SUPPLY_COSTS['HIGHTEMPLAR'])
+    # Action 19: train_high_templar — needs idle Gateway + Templar Archive
+    mask[:, 19] = has_idle_gw_wg & has_templar_archive
 
-    # Action 20: warp_in_zealot — needs a ready Warpgate + supply
-    mask[:, 20] = has_warpgate & (supply_available >= SUPPLY_COSTS['ZEALOT'])
+    # Action 20: warp_in_zealot — needs idle Warpgate
+    mask[:, 20] = has_idle_wg
 
-    # Action 21: warp_in_stalker — needs Warpgate + Cybernetics Core + supply
-    mask[:, 21] = has_warpgate & has_cybcore & (
-        supply_available >= SUPPLY_COSTS['STALKER'])
+    # Action 21: warp_in_stalker — needs idle Warpgate + Cybernetics Core
+    mask[:, 21] = has_idle_wg & has_cybcore
 
-    # Action 22: warp_in_high_templar — needs Warpgate + Templar Archive + supply
-    mask[:, 22] = has_warpgate & has_templar_archive & (
-        supply_available >= SUPPLY_COSTS['HIGHTEMPLAR'])
+    # Action 22: warp_in_high_templar — needs idle Warpgate + Templar Archive
+    mask[:, 22] = has_idle_wg & has_templar_archive
 
     # Action 23: archon_warp — needs 2+ idle High Templars to merge
     mask[:, 23] = has_2_hightemplar

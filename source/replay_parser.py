@@ -80,7 +80,7 @@ UNITS = [
     "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON", "IMMORTAL", "CARRIER", "VOIDRAY",
 ]
 
-OBS_SIZE = 53  # 6 base + 15 structures + 8 units + 15 pending structures + 8 pending units + 1 opp
+OBS_SIZE = 57  # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 1 opp + 4 idle
 
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
@@ -138,8 +138,7 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
     Used during parsing to discard rows where the label contradicts the mask,
     which would cause log(0) = -inf loss during training.
 
-    Checks only completed structure/unit counts (indices 6-28), not pending,
-    because a structure under construction doesn't yet unlock tech.
+    Must stay in sync with action_mask.build_legal_mask.
     """
     has_nexus = obs[_IDX_NEXUS] > _EPS
     has_pylon = obs[_IDX_PYLON] > _EPS
@@ -154,41 +153,54 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
     has_fleet = obs[_IDX_FLEETBEACON] > _EPS
     has_2ht = obs[_IDX_HIGHTEMPLAR] > (1.5 / 30.0)
 
+    # Probe queue cap — pending probe count at index 44 (normalised /30)
+    # nexus count at index 6 (normalised /10)
+    pending_probes = obs[44] * 30.0
+    nexus_count = obs[_IDX_NEXUS] * 10.0
+    probe_queue_ok = pending_probes < (2.0 * nexus_count)
+
+    # Idle building checks — indices 53-56 added in new obs layout
+    # At least 0.5/5 = 0.1 means at least 1 building is idle
+    _IDLE_EPS = 0.5 / 5.0
+    has_idle_gw_wg = obs[53] > _IDLE_EPS
+    has_idle_sg = obs[54] > _IDLE_EPS
+    has_idle_robo = obs[55] > _IDLE_EPS
+    has_idle_wg = obs[56] > _IDLE_EPS
+
     # Any combat unit present (needed for attack action)
-    # indices 22-28 are zealot, stalker, hightemplar, archon, immortal, carrier, voidray
     has_army = any(obs[i] > _EPS for i in range(22, 29))
 
     rules = {
-        0:  True,                             # do_nothing
-        1:  has_nexus,                        # train_probe
-        2:  True,                             # build_pylon
-        3:  has_pylon,                        # build_gateway
-        4:  has_gateway,                      # build_cyberneticscore
-        5:  has_nexus,                        # build_assimilator
-        6:  True,                             # build_nexus
-        7:  has_pylon,                        # build_forge
-        8:  has_cybcore,                      # build_stargate
-        9:  has_cybcore,                      # build_robotics_facility
-        10: has_cybcore,                      # build_twilight_council
-        11: has_forge,                        # build_photon_cannon
-        12: has_stargate,                     # build_fleet_beacon
-        13: has_twilight,                     # build_templar_archive
-        14: has_gateway,                      # train_zealot
-        15: has_gateway and has_cybcore,      # train_stalker
-        16: has_robofac,                      # train_immortal
-        17: has_stargate,                     # train_voidray
-        18: has_stargate and has_fleet,       # train_carrier
-        19: has_gateway and has_temparch,     # train_high_templar
-        20: has_warpgate,                     # warp_in_zealot
-        21: has_warpgate and has_cybcore,     # warp_in_stalker
-        22: has_warpgate and has_temparch,    # warp_in_high_templar
-        23: has_2ht,                          # archon_warp
-        24: has_twilight,                     # research_charge
-        25: has_cybcore,                      # research_warp_gate
-        26: has_forge,                        # upgrade_ground_weapons
-        27: has_cybcore,                      # upgrade_air_weapons
-        28: has_forge,                        # upgrade_shields
-        29: has_army,                         # attack_enemy_base
+        0:  True,                                      # do_nothing
+        1:  has_nexus and probe_queue_ok,              # train_probe
+        2:  True,                                      # build_pylon
+        3:  has_pylon,                                 # build_gateway
+        4:  has_gateway,                               # build_cyberneticscore
+        5:  has_nexus,                                 # build_assimilator
+        6:  True,                                      # build_nexus
+        7:  has_pylon,                                 # build_forge
+        8:  has_cybcore,                               # build_stargate
+        9:  has_cybcore,                               # build_robotics_facility
+        10: has_cybcore,                               # build_twilight_council
+        11: has_forge,                                 # build_photon_cannon
+        12: has_stargate,                              # build_fleet_beacon
+        13: has_twilight,                              # build_templar_archive
+        14: has_idle_gw_wg,                            # train_zealot
+        15: has_idle_gw_wg and has_cybcore,            # train_stalker
+        16: has_idle_robo,                             # train_immortal
+        17: has_idle_sg,                               # train_voidray
+        18: has_idle_sg and has_fleet,                 # train_carrier
+        19: has_idle_gw_wg and has_temparch,           # train_high_templar
+        20: has_idle_wg,                               # warp_in_zealot
+        21: has_idle_wg and has_cybcore,               # warp_in_stalker
+        22: has_idle_wg and has_temparch,              # warp_in_high_templar
+        23: has_2ht,                                   # archon_warp
+        24: has_twilight,                              # research_charge
+        25: has_cybcore,                               # research_warp_gate
+        26: has_forge,                                 # upgrade_ground_weapons
+        27: has_cybcore,                               # upgrade_air_weapons
+        28: has_forge,                                 # upgrade_shields
+        29: has_army,                                  # attack_enemy_base
     }
     return rules.get(action_id, False)
 
@@ -273,6 +285,30 @@ class GameState:
         Serialize to flat vector matching ObservationWrapper.get_observation().
         override_time lets the caller pass the exact grid-boundary time rather
         than relying on the last PlayerStatsEvent time.
+
+        Idle building derivation
+        ------------------------
+        sc2reader doesn't expose idle state directly, so we derive it from
+        completed building counts minus the pending units that occupy them.
+
+        Gateway/Warpgate share a single production queue in our tracker —
+        warped-in units and trained units both increment the same pending_units
+        counters — so we treat them as one combined pool.
+
+          idle_gateway_warpgate = max(0, (gateways + warpgates)
+                                       - zealots_pending
+                                       - stalkers_pending
+                                       - ht_pending)
+
+          idle_stargate         = max(0, stargates
+                                       - voidrays_pending
+                                       - carriers_pending)
+
+          idle_robo             = max(0, robofacs
+                                       - immortals_pending)
+
+        Each is normalised by 5 (a reasonable upper bound for building counts).
+        A value > 0 means at least one building of that type is sitting idle.
         """
         t = override_time if override_time is not None else self.time
         ideal_workers = max(self.counts["NEXUS"], 1) * 22
@@ -295,6 +331,34 @@ class GameState:
         for u in UNITS:
             obs.append(self.pending_units[u] / 30.0)
         obs.append(self.opp_supply_used / 200.0)
+
+        # --- Idle production building features (indices 53-56) ---
+        gw_wg_total = self.counts["GATEWAY"] + self.counts["WARPGATE"]
+        gw_wg_busy = (self.pending_units["ZEALOT"]
+                      + self.pending_units["STALKER"]
+                      + self.pending_units["HIGHTEMPLAR"])
+        idle_gw_wg = max(0, gw_wg_total - gw_wg_busy)
+
+        sg_busy = (self.pending_units["VOIDRAY"]
+                   + self.pending_units["CARRIER"])
+        idle_sg = max(0, self.counts["STARGATE"] - sg_busy)
+
+        robo_busy = self.pending_units["IMMORTAL"]
+        idle_robo = max(0, self.counts["ROBOTICSFACILITY"] - robo_busy)
+
+        # Warpgate-specific idle: warpgates ready to warp but not currently
+        # warping. In the parser we can't track warp cooldowns, so we use
+        # completed warpgates minus the portion of gw_wg_busy assigned to them.
+        # Approximation: warpgates are "idle" proportionally to their share
+        # of the combined gateway+warpgate pool.
+        wg_count = self.counts["WARPGATE"]
+        idle_wg = max(
+            0, wg_count - max(0, gw_wg_busy - self.counts["GATEWAY"]))
+
+        obs.append(idle_gw_wg / 5.0)   # index 53
+        obs.append(idle_sg / 5.0)   # index 54
+        obs.append(idle_robo / 5.0)   # index 55
+        obs.append(idle_wg / 5.0)   # index 56
 
         assert len(
             obs) == OBS_SIZE, f"Obs size mismatch: {len(obs)} vs {OBS_SIZE}"
@@ -498,6 +562,11 @@ class ReplayParser:
             print(f"  [{action_id:2d}] {ability:30s}: {count:5d} samples")
         total = sum(self.mapped_actions.values())
         print(f"\nTotal mapped samples: {total}")
+        print(
+            f"Conflict rows dropped (label illegal at snapshot): {self.conflicts_dropped}")
+        pct = 100 * self.conflicts_dropped / \
+            max(total + self.conflicts_dropped, 1)
+        print(f"  ({pct:.1f}% of candidate rows filtered)")
         if self.unmapped_abilities:
             print("\nUnmapped Abilities (omitted):")
             for ability, count in sorted(self.unmapped_abilities.items(), key=lambda x: -x[1]):

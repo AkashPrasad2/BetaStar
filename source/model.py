@@ -31,7 +31,7 @@ from action_mask import apply_legal_mask
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
 
-OBS_SIZE = 53   # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 1 opp
+OBS_SIZE = 57   # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 1 opp + 4 idle
 NUM_ACTIONS = 30   # action 0 = do_nothing, kept for index stability
 
 # Model hyper-params
@@ -205,7 +205,7 @@ def compute_class_weights(
         for a in act_seq.numpy():
             counts[int(a)] += 1
     counts = np.where(counts == 0, 1.0, counts)
-    weights = 1.0 / counts   # sqrt dampens extremes vs plain 1/n
+    weights = 1.0 / np.sqrt(counts)   # sqrt dampens extremes vs plain 1/n
     weights /= weights.sum()
     return torch.tensor(weights, dtype=torch.float32)
 
@@ -269,8 +269,8 @@ def train_epoch(model, loader, optimizer, criterion, device):
             bad = ~label_logits[:, 0].isfinite()
             if bad.any():
                 n_bad = bad.sum().item()
-                # print(f"  [WARN] {n_bad} label/mask conflicts remain in dataset "
-                #       f"— silencing those positions. Run conflict_diagnostic.py.")
+                print(f"  [WARN] {n_bad} label/mask conflicts remain in dataset "
+                      f"— silencing those positions. Run conflict_diagnostic.py.")
                 bad_idx = real_idx[bad]
                 flat_acts = flat_acts.clone()
                 flat_acts[bad_idx] = -100

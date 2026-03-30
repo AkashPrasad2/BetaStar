@@ -1,5 +1,4 @@
 from sc2.bot_ai import BotAI
-from sc2.player import Bot, Computer
 from sc2.ids.unit_typeid import UnitTypeId
 
 # 15 structures
@@ -38,7 +37,7 @@ class ObservationWrapper:
     """
     Converts game state into a flat vector for neural network input.
 
-    Feature layout (53 total):
+    Feature layout (57 total):
         [0]     game time (normalized)
         [1]     minerals
         [2]     vespene
@@ -50,16 +49,27 @@ class ObservationWrapper:
         [29:44] in-progress structure counts (15)
         [44:52] in-progress unit counts      (8)
         [52]    opponent supply_used
+        [53]    idle gateway+warpgate count  (normalised /5)
+        [54]    idle stargate count          (normalised /5)
+        [55]    idle robotics facility count (normalised /5)
+        [56]    idle warpgate count          (normalised /5)
     """
 
     def __init__(self):
         self.observation_size = self.calculate_obs_size()
 
     def calculate_obs_size(self):
-        # 6 base + 15 structures + 8 units + 15 structures_in_progress + 8 units_in_progress + 1 opp
-        return 6 + len(PROTOSS_STRUCTURES) + len(PROTOSS_UNITS) + len(PROTOSS_STRUCTURES) + len(PROTOSS_UNITS) + 1
+        # 6 base + 15 structs + 8 units + 15 structs_pending + 8 units_pending
+        # + 1 opp + 4 idle production buildings
+        return (6
+                + len(PROTOSS_STRUCTURES)
+                + len(PROTOSS_UNITS)
+                + len(PROTOSS_STRUCTURES)
+                + len(PROTOSS_UNITS)
+                + 1
+                + 4)
 
-    def get_observation(self, bot, opponent=None):
+    def get_observation(self, bot: BotAI, opponent=None):
         obs = []
 
         # --- Base features ---
@@ -86,12 +96,41 @@ class ObservationWrapper:
             obs.append(bot.structures(structure).not_ready.amount / 10.0)
 
         # --- In-progress units (queued in production buildings) ---
-        # already_pending() counts units currently being trained across all
-        # production buildings. Normalised identically to completed units.
         for unit in PROTOSS_UNITS:
             obs.append(bot.already_pending(unit) / 30.0)
 
         # --- Opponent ---
         obs.append(opponent.supply_used / 200.0)
+
+        # --- Idle production buildings (indices 53-56) ---
+        # Gateway + Warpgate combined pool: idle if building count exceeds
+        # the number of gateway-type units currently in production.
+        gw_count = bot.structures(UnitTypeId.GATEWAY).ready.amount
+        wg_count = bot.structures(UnitTypeId.WARPGATE).ready.amount
+        gw_wg_busy = (bot.already_pending(UnitTypeId.ZEALOT)
+                      + bot.already_pending(UnitTypeId.STALKER)
+                      + bot.already_pending(UnitTypeId.HIGHTEMPLAR))
+        idle_gw_wg = max(0, (gw_count + wg_count) - gw_wg_busy)
+
+        # Stargate: idle if stargate count exceeds air units in production.
+        sg_count = bot.structures(UnitTypeId.STARGATE).ready.amount
+        sg_busy = (bot.already_pending(UnitTypeId.VOIDRAY)
+                   + bot.already_pending(UnitTypeId.CARRIER))
+        idle_sg = max(0, sg_count - sg_busy)
+
+        # Robotics Facility: idle if count exceeds immortals in production.
+        robo_count = bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.amount
+        robo_busy = bot.already_pending(UnitTypeId.IMMORTAL)
+        idle_robo = max(0, robo_count - robo_busy)
+
+        # Warpgate-specific idle: warpgates whose warp cooldown has expired.
+        # already_pending counts units mid-warp, so idle warpgates are those
+        # not currently warping anything.
+        idle_wg = max(0, wg_count - max(0, gw_wg_busy - gw_count))
+
+        obs.append(idle_gw_wg / 5.0)   # index 53
+        obs.append(idle_sg / 5.0)   # index 54
+        obs.append(idle_robo / 5.0)   # index 55
+        obs.append(idle_wg / 5.0)   # index 56
 
         return obs
