@@ -48,6 +48,10 @@ LR = 3e-4
 VAL_SPLIT = 0.15
 SEED = 54
 
+# "accuracy" = save model with best validation accuracy (better generalization)
+# "loss" = save model with lowest validation loss (better imitation)
+MODEL_SELECTION = "loss"  # Change to "accuracy" to switch
+
 # Inference temperature: < 1.0 sharpens, > 1.0 softens.
 # 0.8 keeps diversity without going fully random.
 INFERENCE_TEMPERATURE = 0.8
@@ -375,7 +379,16 @@ def train():
     scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
 
     Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)
-    best_val_acc = 0.0
+
+    if MODEL_SELECTION == "accuracy":
+        best_val_metric = 0.0
+        metric_name = "accuracy"
+        def is_better(new, best): return new > best
+    else:  # "loss"
+        best_val_metric = float('inf')
+        metric_name = "loss"
+        def is_better(new, best): return new < best
+
     best_path = Path(CHECKPOINT_DIR) / "best_model.pt"
 
     print(f"\n{'Epoch':>6} {'Train Loss':>11} {'Train Acc':>10} "
@@ -393,11 +406,15 @@ def train():
         print(f"{epoch:>6} {train_loss:>11.4f} {train_acc:>10.3%} "
               f"{val_loss:>10.4f} {val_acc:>9.3%} {lr:>10.2e}")
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        # Select metric based on MODEL_SELECTION
+        current_metric = val_acc if MODEL_SELECTION == "accuracy" else val_loss
+
+        if is_better(current_metric, best_val_metric):
+            best_val_metric = current_metric
             torch.save({
                 "epoch":       epoch,
                 "model_state": model.state_dict(),
+                "val_loss":    val_loss,
                 "val_acc":     val_acc,
                 "obs_size":    OBS_SIZE,
                 "num_actions": NUM_ACTIONS,
@@ -406,9 +423,17 @@ def train():
                 "lstm_layers": LSTM_LAYERS,
                 "head_hidden": HEAD_HIDDEN,
             }, best_path)
-            print(f"         ↑ new best ({val_acc:.3%}) saved to {best_path}")
+            if MODEL_SELECTION == "accuracy":
+                print(
+                    f"         ↑ new best (acc={val_acc:.3%}) saved to {best_path}")
+            else:
+                print(
+                    f"         ↑ new best (loss={val_loss:.4f}) saved to {best_path}")
 
-    print(f"\nTraining complete. Best val accuracy: {best_val_acc:.3%}")
+    if MODEL_SELECTION == "accuracy":
+        print(f"\nTraining complete. Best val accuracy: {best_val_metric:.3%}")
+    else:
+        print(f"\nTraining complete. Best val loss: {best_val_metric:.4f}")
     return model
 
 
