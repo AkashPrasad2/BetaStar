@@ -43,14 +43,14 @@ DROPOUT = 0.3
 
 # Training hyper-params
 BATCH_SIZE = 32
-EPOCHS = 80
+EPOCHS = 60
 LR = 3e-4
 VAL_SPLIT = 0.15
 SEED = 54
 
 # "accuracy" = save model with best validation accuracy (better generalization)
 # "loss" = save model with lowest validation loss (better imitation)
-MODEL_SELECTION = "loss"  # Change to "accuracy" to switch
+MODEL_SELECTION = "accuracy"  # Change to "accuracy" to switch
 
 # Inference temperature: < 1.0 sharpens, > 1.0 softens.
 # 0.8 keeps diversity without going fully random.

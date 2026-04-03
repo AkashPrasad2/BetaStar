@@ -57,7 +57,7 @@ class ProtossBot(BotAI):
         # Illegal or unaffordable actions fail silently inside execute_action —
         # the bot simply waits until the next cooldown tick and tries again.
         await actions.execute_action(action_id, self)
-        self.action_cooldown = 40
+        self.action_cooldown = 22
 
     async def on_end(self, game_result):
         # Reset LSTM state between games if running multiple in sequence

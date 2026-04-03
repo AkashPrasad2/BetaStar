@@ -1,30 +1,23 @@
 """
-SC2 Replay Parser — Fixed-Grid Sequence Dataset Builder
-========================================================
-Key change from event-driven version:
+replay_parser.py — Queued-Action Fixed-Grid Sequence Dataset Builder
+=====================================================================
 
-  Observations are now sampled on a fixed temporal grid that matches the
-  live bot's cooldown cadence (GRID_INTERVAL_SECONDS). A row is added only
-  when a mapped macro action fires within a grid window — idle windows are
-  skipped entirely, so there is no do_nothing noise in the dataset.
+Core design
+-----------
+The bot takes one macro action every GRID_INTERVAL_SECONDS (4s, matching
+action_cooldown=22 at ~5.6 on_step/s).  The parser mirrors this exactly:
 
-  This closes the training/inference distribution gap: the model now learns
-  "given the state at the start of an 8-second window, which macro action
-  (if any) should I take?" — exactly the question predict_action asks.
+  • Time is divided into 4-second windows: [0,4), [4,8), [8,12), ...
+  • The observation snapshot for window W is taken at t = W * 4s, using
+    the game state BEFORE any events inside that window fire.  This is
+    exactly what the live bot observes when predict_action is called.
+  • Each mapped command from the replay is pushed into the next FREE window
+    slot, simulating the bot's single-action-per-cooldown cadence.
+  • No lag cap — every command is queued regardless of how far it gets pushed.
+  • Windows with no queued command receive label 0 (do_nothing).  This teaches
+    the model when NOT to act, which the previous parser never did.
 
-Grid mechanics:
-  - Windows: [0, 8s), [8s, 16s), [16s, 24s), ...
-  - Obs snapshot: taken at the START of the window, before any events in it.
-    This is what the live bot observes when predict_action is called.
-  - Action label: the first mapped command that fires inside the window.
-    If multiple mapped commands fire, only the first is the label; all still
-    update pending-count state so subsequent snapshots stay accurate.
-  - Empty windows (no mapped action): skipped, not added as do_nothing.
-
-GRID_INTERVAL_SECONDS = 8 matches cooldown=44 at ~5.6 on_step/s ≈ 7.8s.
-Adjust if you change the bot cooldown.
-
-OBS_SIZE remains 53. Layout identical to observation_wrapper.py.
+OBS_SIZE = 57  (matches observation_wrapper.py exactly)
 """
 
 from collections import defaultdict
@@ -33,14 +26,14 @@ import sc2reader
 import numpy as np
 from sc2reader.events import (
     PlayerStatsEvent, UnitBornEvent, UnitDiedEvent,
-    UnitDoneEvent, BasicCommandEvent,
+    UnitDoneEvent, BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent,
 )
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-GRID_INTERVAL_SECONDS = 8  # change this if you change the bot cooldown
+GRID_INTERVAL_SECONDS = 4   # must match bot action_cooldown cadence
 
 STRUCTURE_NAME_MAP = {
     "Nexus":             "NEXUS",
@@ -80,7 +73,7 @@ UNITS = [
     "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON", "IMMORTAL", "CARRIER", "VOIDRAY",
 ]
 
-OBS_SIZE = 57  # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 1 opp + 4 idle
+OBS_SIZE = 57  # 6 base + 15 structs + 8 units + 15 pending structs + 8 pending units + 1 opp + 4 idle
 
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
@@ -114,7 +107,7 @@ MORPH_MAP = {
     "WarpGate": "GATEWAY",
 }
 
-# Obs feature indices for completed structures (must match observation_wrapper.py)
+# Obs feature indices (must match observation_wrapper.py)
 _IDX_NEXUS = 6
 _IDX_PYLON = 7
 _IDX_GATEWAY = 8
@@ -127,93 +120,83 @@ _IDX_ROBOTICSFACILITY = 16
 _IDX_CYBERNETICSCORE = 18
 _IDX_STARGATE = 19
 _IDX_FLEETBEACON = 20
-_IDX_HIGHTEMPLAR = 24  # completed unit
+_IDX_HIGHTEMPLAR = 24
 
-_EPS = 0.01  # > 0 but < 0.1 (= 1 structure normalised /10)
+_EPS = 0.01
 
 
 def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
     """
     Pure-numpy mirror of action_mask.build_legal_mask for a single obs vector.
-    Used during parsing to discard rows where the label contradicts the mask,
-    which would cause log(0) = -inf loss during training.
-
-    Must stay in sync with action_mask.build_legal_mask.
+    Must stay in sync with action_mask.py.
+    do_nothing (0) is always legal.
     """
+    if action_id == 0:
+        return True
+
     has_nexus = obs[_IDX_NEXUS] > _EPS
     has_pylon = obs[_IDX_PYLON] > _EPS
     has_gateway = obs[_IDX_GATEWAY] > _EPS
-    has_warpgate = obs[_IDX_WARPGATE] > _EPS
     has_forge = obs[_IDX_FORGE] > _EPS
     has_twilight = obs[_IDX_TWILIGHTCOUNCIL] > _EPS
     has_temparch = obs[_IDX_TEMPLARARCHIVE] > _EPS
-    has_robofac = obs[_IDX_ROBOTICSFACILITY] > _EPS
     has_cybcore = obs[_IDX_CYBERNETICSCORE] > _EPS
     has_stargate = obs[_IDX_STARGATE] > _EPS
     has_fleet = obs[_IDX_FLEETBEACON] > _EPS
     has_2ht = obs[_IDX_HIGHTEMPLAR] > (1.5 / 30.0)
 
-    # Probe queue cap — pending probe count at index 44 (normalised /30)
-    # nexus count at index 6 (normalised /10)
     pending_probes = obs[44] * 30.0
     nexus_count = obs[_IDX_NEXUS] * 10.0
     probe_queue_ok = pending_probes < (2.0 * nexus_count)
 
-    # Idle building checks — indices 53-56 added in new obs layout
-    # At least 0.5/5 = 0.1 means at least 1 building is idle
     _IDLE_EPS = 0.5 / 5.0
     has_idle_gw_wg = obs[53] > _IDLE_EPS
     has_idle_sg = obs[54] > _IDLE_EPS
     has_idle_robo = obs[55] > _IDLE_EPS
     has_idle_wg = obs[56] > _IDLE_EPS
 
-    # Any combat unit present (needed for attack action)
     has_army = any(obs[i] > _EPS for i in range(22, 29))
 
     rules = {
-        0:  True,                                      # do_nothing
-        1:  has_nexus and probe_queue_ok,              # train_probe
-        2:  True,                                      # build_pylon
-        3:  has_pylon,                                 # build_gateway
-        4:  has_gateway,                               # build_cyberneticscore
-        5:  has_nexus,                                 # build_assimilator
-        6:  True,                                      # build_nexus
-        7:  has_pylon,                                 # build_forge
-        8:  has_cybcore,                               # build_stargate
-        9:  has_cybcore,                               # build_robotics_facility
-        10: has_cybcore,                               # build_twilight_council
-        11: has_forge,                                 # build_photon_cannon
-        12: has_stargate,                              # build_fleet_beacon
-        13: has_twilight,                              # build_templar_archive
-        14: has_idle_gw_wg,                            # train_zealot
-        15: has_idle_gw_wg and has_cybcore,            # train_stalker
-        16: has_idle_robo,                             # train_immortal
-        17: has_idle_sg,                               # train_voidray
-        18: has_idle_sg and has_fleet,                 # train_carrier
-        19: has_idle_gw_wg and has_temparch,           # train_high_templar
-        20: has_idle_wg,                               # warp_in_zealot
-        21: has_idle_wg and has_cybcore,               # warp_in_stalker
-        22: has_idle_wg and has_temparch,              # warp_in_high_templar
-        23: has_2ht,                                   # archon_warp
-        24: has_twilight,                              # research_charge
-        25: has_cybcore,                               # research_warp_gate
-        26: has_forge,                                 # upgrade_ground_weapons
-        27: has_cybcore,                               # upgrade_air_weapons
-        28: has_forge,                                 # upgrade_shields
-        29: has_army,                                  # attack_enemy_base
+        1:  has_nexus and probe_queue_ok,
+        2:  True,
+        3:  has_pylon,
+        4:  has_gateway,
+        5:  has_nexus,
+        6:  True,
+        7:  has_pylon,
+        8:  has_cybcore,
+        9:  has_cybcore,
+        10: has_cybcore,
+        11: has_forge,
+        12: has_stargate,
+        13: has_twilight,
+        14: has_idle_gw_wg,
+        15: has_idle_gw_wg and has_cybcore,
+        16: has_idle_robo,
+        17: has_idle_sg,
+        18: has_idle_sg and has_fleet,
+        19: has_idle_gw_wg and has_temparch,
+        20: has_idle_wg,
+        21: has_idle_wg and has_cybcore,
+        22: has_idle_wg and has_temparch,
+        23: has_2ht,
+        24: has_twilight,
+        25: has_cybcore,
+        26: has_forge,
+        27: has_cybcore,
+        28: has_forge,
+        29: has_army,
     }
     return rules.get(action_id, False)
 
 
 # ---------------------------------------------------------------------------
-# GameState — unchanged from original
+# GameState
 # ---------------------------------------------------------------------------
 
 class GameState:
-    """
-    Tracks full Protoss game state including in-progress counts.
-    Identical to original; kept here so the parser is self-contained.
-    """
+    """Tracks full Protoss game state including in-progress counts."""
 
     def __init__(self):
         self.time = 0.0
@@ -234,17 +217,17 @@ class GameState:
     def update_from_stats(self, event: PlayerStatsEvent):
         self.time = event.second
         self.minerals = getattr(event, "minerals_current",
-                                getattr(event, "minerals", 0))
+                                getattr(event, "minerals",  0))
         self.vespene = getattr(event, "vespene_current",
-                               getattr(event, "vespene",  0))
-        self.supply_used = getattr(event, "supply_used",
-                                   getattr(event, "food_used", 0))
-        self.supply_cap = getattr(event, "supply_made",
-                                  getattr(event, "food_made", 0))
+                               getattr(event, "vespene",   0))
+        self.supply_used = getattr(
+            event, "supply_used",      getattr(event, "food_used", 0))
+        self.supply_cap = getattr(
+            event, "supply_made",      getattr(event, "food_made", 0))
 
     def update_opp_from_stats(self, event: PlayerStatsEvent):
-        self.opp_supply_used = getattr(event, "supply_used",
-                                       getattr(event, "food_used", 0))
+        self.opp_supply_used = getattr(
+            event, "supply_used", getattr(event, "food_used", 0))
 
     def on_build_command(self, ability_name: str):
         key = BUILD_COMMAND_TO_STRUCTURE.get(ability_name)
@@ -281,35 +264,6 @@ class GameState:
             self.counts[key] = max(0, self.counts[key] - 1)
 
     def to_obs(self, override_time: float | None = None) -> list[float]:
-        """
-        Serialize to flat vector matching ObservationWrapper.get_observation().
-        override_time lets the caller pass the exact grid-boundary time rather
-        than relying on the last PlayerStatsEvent time.
-
-        Idle building derivation
-        ------------------------
-        sc2reader doesn't expose idle state directly, so we derive it from
-        completed building counts minus the pending units that occupy them.
-
-        Gateway/Warpgate share a single production queue in our tracker —
-        warped-in units and trained units both increment the same pending_units
-        counters — so we treat them as one combined pool.
-
-          idle_gateway_warpgate = max(0, (gateways + warpgates)
-                                       - zealots_pending
-                                       - stalkers_pending
-                                       - ht_pending)
-
-          idle_stargate         = max(0, stargates
-                                       - voidrays_pending
-                                       - carriers_pending)
-
-          idle_robo             = max(0, robofacs
-                                       - immortals_pending)
-
-        Each is normalised by 5 (a reasonable upper bound for building counts).
-        A value > 0 means at least one building of that type is sitting idle.
-        """
         t = override_time if override_time is not None else self.time
         ideal_workers = max(self.counts["NEXUS"], 1) * 22
         worker_saturation = self.counts["PROBE"] / ideal_workers
@@ -332,25 +286,19 @@ class GameState:
             obs.append(self.pending_units[u] / 30.0)
         obs.append(self.opp_supply_used / 200.0)
 
-        # --- Idle production building features (indices 53-56) ---
+        # Idle production building features (indices 53-56)
         gw_wg_total = self.counts["GATEWAY"] + self.counts["WARPGATE"]
         gw_wg_busy = (self.pending_units["ZEALOT"]
                       + self.pending_units["STALKER"]
                       + self.pending_units["HIGHTEMPLAR"])
         idle_gw_wg = max(0, gw_wg_total - gw_wg_busy)
 
-        sg_busy = (self.pending_units["VOIDRAY"]
-                   + self.pending_units["CARRIER"])
+        sg_busy = self.pending_units["VOIDRAY"] + self.pending_units["CARRIER"]
         idle_sg = max(0, self.counts["STARGATE"] - sg_busy)
 
         robo_busy = self.pending_units["IMMORTAL"]
         idle_robo = max(0, self.counts["ROBOTICSFACILITY"] - robo_busy)
 
-        # Warpgate-specific idle: warpgates ready to warp but not currently
-        # warping. In the parser we can't track warp cooldowns, so we use
-        # completed warpgates minus the portion of gw_wg_busy assigned to them.
-        # Approximation: warpgates are "idle" proportionally to their share
-        # of the combined gateway+warpgate pool.
         wg_count = self.counts["WARPGATE"]
         idle_wg = max(
             0, wg_count - max(0, gw_wg_busy - self.counts["GATEWAY"]))
@@ -373,13 +321,16 @@ class ReplayParser:
     """
     Parses SC2 replays into fixed-grid sequence arrays for LSTM training.
 
-    Each replay becomes one (T, OBS_SIZE+1) array where:
-      - T   = number of grid windows that contained at least one macro action.
-      - row = [obs_at_window_start (53 floats), action_id (1 float)]
+    Queue mechanic
+    --------------
+    As mapped commands are encountered, each is assigned to the next FREE
+    grid slot at or after the command's actual game time.  There is no lag
+    cap — every command is queued regardless of how far it gets pushed.
 
-    The obs snapshot uses the game time at the window START (override_time),
-    so the time feature is always exactly aligned with the grid — not
-    dependent on when the last PlayerStatsEvent happened to fire.
+    Grid slots without a queued command receive label 0 (do_nothing).
+
+    Each row = [obs_at_window_start (OBS_SIZE floats), action_id (1 float)]
+    where obs_at_window_start is snapshotted BEFORE any events in that window.
     """
 
     def __init__(
@@ -394,7 +345,8 @@ class ReplayParser:
 
         self.unmapped_abilities = defaultdict(int)
         self.mapped_actions = defaultdict(int)
-        self.conflicts_dropped = 0   # rows where label contradicts legal mask
+        self.conflicts_dropped = 0
+        self.max_queue_lag_seen = 0   # diagnostic: worst-case lag observed
 
         self.EVENT_TO_ACTION = {
             "TrainProbe":             1,
@@ -431,18 +383,20 @@ class ReplayParser:
 
     def parse_replay(self, replay, min_length: int = 10) -> np.ndarray | None:
         """
-        Walk replay events on a fixed GRID_INTERVAL_SECONDS grid.
+        Walk replay events and build a queued-action grid.
 
-        Algorithm:
-          1. Walk all events chronologically, maintaining GameState.
-          2. Whenever an event's timestamp crosses into a new grid window,
-             snapshot the current state at that window's START time.
-          3. For BasicCommandEvents: always update pending counts.
-             If the command maps to a known action AND this window doesn't
-             already have a label, record it as this window's action.
-          4. After the loop, emit one row per window that has a label.
-
-        Returns float32 array (T, OBS_SIZE+1), or None if T < min_length.
+        Algorithm
+        ---------
+        1. Walk all events in order, maintaining GameState and snapshotting
+           obs at each new grid window boundary (BEFORE events in that window).
+        2. For each mapped BasicCommandEvent at game time t:
+           a. cmd_window = floor(t / G)
+           b. Find the first slot >= cmd_window with no action assigned yet.
+           c. Assign this action to that slot (no lag cap).
+        3. After the full event walk, emit one row per window from 0 to
+           last_window.  Slots with no assignment get action 0 (do_nothing).
+        4. Non-zero labels that contradict the legal mask are demoted to
+           do_nothing so sequence length stays aligned with real game time.
         """
         protoss_player = None
         zerg_player = None
@@ -461,27 +415,23 @@ class ReplayParser:
         state = GameState()
         G = GRID_INTERVAL_SECONDS
 
-        # grid_obs[i]    = obs snapshot at the START of window i (time = i*G)
-        # grid_actions[i] = action_id of the first mapped command in window i
         grid_obs = {}
-        grid_actions = {}
+        grid_actions = {}   # slot -> action_id (non-zero only)
 
         current_grid = 0
-        # Snapshot window 0 from the initial (pre-event) state
         grid_obs[0] = state.to_obs(override_time=0.0)
+        last_window = 0
 
         for event in replay.events:
             t = event.second
 
-            # --- Advance grid snapshots ---
-            # Before processing this event, snapshot the start of every new
-            # grid window we've entered.  The snapshot captures state AFTER
-            # all events from prior windows but BEFORE events in this window.
+            # Snapshot the start of every new grid window BEFORE this event.
             new_grid = int(t / G)
             while current_grid < new_grid:
                 current_grid += 1
                 grid_obs[current_grid] = state.to_obs(
                     override_time=float(current_grid * G))
+            last_window = max(last_window, new_grid)
 
             # --- Update game state ---
             if isinstance(event, PlayerStatsEvent):
@@ -504,7 +454,7 @@ class ReplayParser:
                     continue
                 state.unit_died(unit.name)
 
-            elif isinstance(event, BasicCommandEvent):
+            elif isinstance(event, (BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent)):
                 if event.player.pid != pid:
                     continue
 
@@ -515,32 +465,52 @@ class ReplayParser:
                 state.on_train_command(ability_name)
 
                 action_id = self.EVENT_TO_ACTION.get(ability_name)
-                if action_id is not None:
-                    # First mapped action in this window wins; later ones
-                    # are dropped as labels (but state was already updated)
-                    window = int(t / G)
-                    if window not in grid_actions:
-                        grid_actions[window] = action_id
-                        self.mapped_actions[ability_name] += 1
-                    # else: second action in same window — state updated, label ignored
-                else:
+                if action_id is None:
                     self.unmapped_abilities[ability_name] += 1
                     if self.debug and self.unmapped_abilities[ability_name] == 1:
                         print(f"    [UNMAPPED] {ability_name}")
+                    continue
+
+                # Find next free slot — no lag cap, queue as far as needed
+                cmd_window = int(t / G)
+                slot = cmd_window
+                while slot in grid_actions:
+                    slot += 1
+
+                lag = slot - cmd_window
+                if lag > self.max_queue_lag_seen:
+                    self.max_queue_lag_seen = lag
+                    if self.debug:
+                        print(f"    [NEW MAX LAG] {ability_name} at t={t:.1f}s "
+                              f"pushed {lag} window(s) → slot {slot} "
+                              f"(t={slot * G:.0f}s)")
+
+                grid_actions[slot] = action_id
+                last_window = max(last_window, slot)
+                self.mapped_actions[ability_name] += 1
+
+        # Ensure obs snapshots exist for all slots up to last_window
+        while current_grid < last_window:
+            current_grid += 1
+            grid_obs[current_grid] = state.to_obs(
+                override_time=float(current_grid * G))
 
         # --- Build rows ---
-        # Emit one (obs, action) row per window that had a mapped action,
-        # in chronological order.  Skip any row where the action contradicts
-        # the legal mask — those cause log(0) = -inf loss during training.
         rows = []
-        for window in sorted(grid_actions.keys()):
+        for window in range(last_window + 1):
             obs = grid_obs.get(window)
             if obs is None:
                 continue
-            action_id = grid_actions[window]
-            if not _action_legal_numpy(obs, action_id):
+
+            action_id = grid_actions.get(window, 0)   # default: do_nothing
+
+            if action_id != 0 and not _action_legal_numpy(obs, action_id):
                 self.conflicts_dropped += 1
-                continue
+                if self.debug:
+                    print(f"    [CONFLICT] window={window} t={window*G:.0f}s "
+                          f"action={action_id} illegal at snapshot — demoted to do_nothing")
+                action_id = 0
+
             rows.append(obs + [float(action_id)])
 
         if len(rows) < min_length:
@@ -556,23 +526,26 @@ class ReplayParser:
         print("\n" + "=" * 60)
         print("PARSING STATISTICS")
         print("=" * 60)
-        print("\nMapped Actions (included in dataset):")
+        print(f"\nGrid interval:          {GRID_INTERVAL_SECONDS}s")
+        print(f"Max queue lag observed: {self.max_queue_lag_seen} window(s) "
+              f"({self.max_queue_lag_seen * GRID_INTERVAL_SECONDS}s)")
+
+        print("\nMapped Actions (queued into dataset):")
         for ability, count in sorted(self.mapped_actions.items(), key=lambda x: -x[1]):
             action_id = self.EVENT_TO_ACTION.get(ability, 0)
             print(f"  [{action_id:2d}] {ability:30s}: {count:5d} samples")
-        total = sum(self.mapped_actions.values())
-        print(f"\nTotal mapped samples: {total}")
-        print(
-            f"Conflict rows dropped (label illegal at snapshot): {self.conflicts_dropped}")
-        pct = 100 * self.conflicts_dropped / \
-            max(total + self.conflicts_dropped, 1)
-        print(f"  ({pct:.1f}% of candidate rows filtered)")
+
+        total_mapped = sum(self.mapped_actions.values())
+        print(f"\nTotal mapped samples:   {total_mapped}")
+        print(f"Conflict demotions:     {self.conflicts_dropped} "
+              f"(label illegal at snapshot time, replaced with do_nothing)")
+
         if self.unmapped_abilities:
-            print("\nUnmapped Abilities (omitted):")
+            print("\nUnmapped Abilities (ignored):")
             for ability, count in sorted(self.unmapped_abilities.items(), key=lambda x: -x[1]):
                 print(f"  {ability:30s}: {count:5d} occurrences")
         else:
-            print("\nNo unmapped abilities found!")
+            print("\nNo unmapped abilities found.")
 
     # ------------------------------------------------------------------
     # Folder processing
@@ -580,16 +553,16 @@ class ReplayParser:
 
     def parse_replay_folder(self):
         sequences = []
-        bot_replays = []
         skipped = 0
         failed = 0
+        bot_replays = []
 
         replay_files = [
             f for f in os.listdir(self.replay_folder) if f.endswith(".SC2Replay")
         ]
         print(f"Found {len(replay_files)} replay(s) to process.")
-        print(f"Grid interval: {GRID_INTERVAL_SECONDS}s "
-              f"(change GRID_INTERVAL_SECONDS to match bot cooldown)\n")
+        print(f"Grid interval: {GRID_INTERVAL_SECONDS}s  "
+              f"(no queue lag cap — all commands preserved)\n")
 
         for fname in replay_files:
             path = os.path.join(self.replay_folder, fname)
@@ -612,8 +585,12 @@ class ReplayParser:
                     print(f"  {fname}: too short, skipped")
                     continue
 
+                actions = seq[:, OBS_SIZE].astype(int)
+                n_do_nothing = (actions == 0).sum()
+                pct_idle = 100 * n_do_nothing / len(actions)
                 sequences.append(seq)
-                print(f"  {fname}: {len(seq)} action windows")
+                print(f"  {fname}: {len(seq)} windows  "
+                      f"(do_nothing: {n_do_nothing}/{len(seq)} = {pct_idle:.0f}%)")
 
             except Exception as e:
                 print(f"  FAILED {fname}: {e}")
@@ -632,19 +609,17 @@ class ReplayParser:
 
         total_steps = sum(len(s) for s in sequences)
         lengths = [len(s) for s in sequences]
+        all_actions = np.concatenate(
+            [s[:, OBS_SIZE].astype(int) for s in sequences])
+        n_do_nothing = (all_actions == 0).sum()
+        pct_idle = 100 * n_do_nothing / len(all_actions)
 
         print(
-            f"\nDone. {len(sequences)} sequences | {total_steps} total action windows")
+            f"\nDone. {len(sequences)} sequences | {total_steps} total windows")
         print(f"Sequence lengths: min={min(lengths)}, max={max(lengths)}, "
               f"mean={np.mean(lengths):.0f}")
-
-        # Sanity check: average seconds per action window
-        # (total game time across replays / total action windows)
-        # Should be close to GRID_INTERVAL_SECONDS * some coverage factor
-        print(f"\nApprox. actions per game minute (mean seq length × "
-              f"{GRID_INTERVAL_SECONDS}s / 60): "
-              f"{np.mean(lengths) * GRID_INTERVAL_SECONDS / 60:.1f}")
-
+        print(
+            f"do_nothing: {n_do_nothing}/{len(all_actions)} = {pct_idle:.1f}% of all rows")
         print(f"Skipped: {skipped}  |  Failed: {failed}")
         if bot_replays:
             print(f"Bot replays skipped: {bot_replays}")

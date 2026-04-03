@@ -148,10 +148,6 @@ def inspect_sequence(sequences, seq_idx):
 
         print(
             f"{i:<6} {time:<8.0f} {minerals:<8.0f} {vespene:<8.0f} {supply:<10} {action_name:<25}")
-
-    if len(seq) > 10:
-        print(f"... ({len(seq) - 10} more timesteps)")
-
     print()
 
 
