@@ -2,7 +2,7 @@ from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
-from helpers import build_structure
+from helpers import build_structure, warp_in_unit
 
 # output layer will be an array of numbers corresponding to the differnet actions the model can take
 ACTIONS = [
@@ -136,33 +136,15 @@ async def execute_action(action_id: int, bot: BotAI):
 
     elif action_name == "warp_in_zealot":
         if bot.can_afford(UnitTypeId.ZEALOT) and bot.structures(UnitTypeId.WARPGATE).ready:
-            abilities = await bot.get_available_abilities(
-                bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.WARPGATETRAIN_ZEALOT in abilities:
-                pylon = bot.structures(UnitTypeId.PYLON).closest_to(
-                    bot.structures(UnitTypeId.WARPGATE).ready.first)
-                bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
-                    UnitTypeId.ZEALOT, pylon.position)
+            await warp_in_unit(bot, UnitTypeId.ZEALOT, AbilityId.WARPGATETRAIN_ZEALOT)
 
     elif action_name == "warp_in_stalker":
         if bot.can_afford(UnitTypeId.STALKER) and bot.structures(UnitTypeId.WARPGATE).ready:
-            abilities = await bot.get_available_abilities(
-                bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.WARPGATETRAIN_STALKER in abilities:
-                pylon = bot.structures(UnitTypeId.PYLON).closest_to(
-                    bot.structures(UnitTypeId.WARPGATE).ready.first)
-                bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
-                    UnitTypeId.STALKER, pylon.position)
+            await warp_in_unit(bot, UnitTypeId.STALKER, AbilityId.WARPGATETRAIN_STALKER)
 
     elif action_name == "warp_in_high_templar":
         if bot.can_afford(UnitTypeId.HIGHTEMPLAR) and bot.structures(UnitTypeId.WARPGATE).ready and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready:
-            abilities = await bot.get_available_abilities(
-                bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.WARPGATETRAIN_HIGHTEMPLAR in abilities:
-                pylon = bot.structures(UnitTypeId.PYLON).closest_to(
-                    bot.structures(UnitTypeId.WARPGATE).ready.first)
-                bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
-                    UnitTypeId.HIGHTEMPLAR, pylon.position)
+            await warp_in_unit(bot, UnitTypeId.HIGHTEMPLAR, AbilityId.WARPGATETRAIN_HIGHTEMPLAR)
 
     elif action_name == "archon_warp_selection":
         # Merge 2 High Templars into an Archon
@@ -246,10 +228,4 @@ async def execute_action(action_id: int, bot: BotAI):
 
     elif action_name == "warp_in_adept":
         if bot.can_afford(UnitTypeId.ADEPT) and bot.structures(UnitTypeId.WARPGATE).ready and bot.structures(UnitTypeId.CYBERNETICSCORE).ready:
-            abilities = await bot.get_available_abilities(
-                bot.structures(UnitTypeId.WARPGATE).ready.first)
-            if AbilityId.TRAINWARP_ADEPT in abilities:
-                pylon = bot.structures(UnitTypeId.PYLON).closest_to(
-                    bot.structures(UnitTypeId.WARPGATE).ready.first)
-                bot.structures(UnitTypeId.WARPGATE).ready.first.warp_in(
-                    UnitTypeId.ADEPT, pylon.position)
+            await warp_in_unit(bot, UnitTypeId.ADEPT, AbilityId.TRAINWARP_ADEPT)

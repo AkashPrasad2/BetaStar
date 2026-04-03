@@ -7,7 +7,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 
 from observation_wrapper import ObservationWrapper
 from model import load_model, predict_action
-from helpers import auto_saturate_assimilators
+from helpers import auto_saturate_assimilators, set_production_rally_points, rally_idle_army, auto_attack, defend_structures
 import actions
 
 CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
@@ -32,6 +32,10 @@ class ProtossBot(BotAI):
         # --- Always-on behaviours ---
         await self.distribute_workers()
         await auto_saturate_assimilators(self)
+        await set_production_rally_points(self)
+        await defend_structures(self)  # Check defense first (higher priority)
+        await rally_idle_army(self)
+        await auto_attack(self)
 
         # --- Model inference on cooldown ---
         if self.action_cooldown > 0:
