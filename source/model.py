@@ -43,7 +43,7 @@ DROPOUT = 0.3
 
 # Training hyper-params
 BATCH_SIZE = 32
-EPOCHS = 80
+EPOCHS = 60
 LR = 3e-4
 VAL_SPLIT = 0.15
 SEED = 54
@@ -53,7 +53,7 @@ SEED = 54
 MODEL_SELECTION = "loss"  # Change to "accuracy" to switch
 
 # keep the decisions diverse (not applied during training, only inference)
-INFERENCE_TEMPERATURE = 0.6
+INFERENCE_TEMPERATURE = 0.8
 
 
 # ---------------------------------------------------------------------------

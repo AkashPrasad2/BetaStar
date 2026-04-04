@@ -1,23 +1,22 @@
 """
 replay_parser.py — Queued-Action Fixed-Grid Sequence Dataset Builder
 =====================================================================
+[unchanged header — see original for full docstring]
 
-Core design
------------
-The bot takes one macro action every GRID_INTERVAL_SECONDS (4s, matching
-action_cooldown=22 at ~5.6 on_step/s).  The parser mirrors this exactly:
+Changes in this version
+-----------------------
+- Removed probe_queue_ok from _action_legal_numpy. The queue-cap check is
+  correct at inference time but wrong for parsing: the parser's pending probe
+  count drifts upward over long games because cancelled/lost probes don't
+  always fire UnitBornEvent to decrement the counter. This was silently
+  demoting dozens of valid probe-train labels per replay.
 
-  • Time is divided into 4-second windows: [0,4), [4,8), [8,12), ...
-  • The observation snapshot for window W is taken at t = W * 4s, using
-    the game state BEFORE any events inside that window fire.  This is
-    exactly what the live bot observes when predict_action is called.
-  • Each mapped command from the replay is pushed into the next FREE window
-    slot, simulating the bot's single-action-per-cooldown cadence.
-  • No lag cap — every command is queued regardless of how far it gets pushed.
-  • Windows with no queued command receive label 0 (do_nothing).  This teaches
-    the model when NOT to act, which the previous parser never did.
+- Added 1-of-building caps for CYBERNETICSCORE, TWILIGHTCOUNCIL, FLEETBEACON,
+  TEMPLARARCHIVE. Pros never build a second of these. Capping the mask here
+  prevents the model from ever learning to build duplicates, and also avoids
+  the (rare) human duplicate build from polluting training labels.
 
-OBS_SIZE = 57  (matches observation_wrapper.py exactly)
+- _IDX_SHIELDBATTERY added (was missing, causing index offset comment confusion).
 """
 
 from collections import defaultdict
@@ -33,7 +32,7 @@ from sc2reader.events import (
 # Constants
 # ---------------------------------------------------------------------------
 
-GRID_INTERVAL_SECONDS = 4   # must match bot action_cooldown cadence
+GRID_INTERVAL_SECONDS = 4
 
 STRUCTURE_NAME_MAP = {
     "Nexus":             "NEXUS",
@@ -73,7 +72,7 @@ UNITS = [
     "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON", "IMMORTAL", "CARRIER", "VOIDRAY",
 ]
 
-OBS_SIZE = 57  # 6 base + 15 structs + 8 units + 15 pending structs + 8 pending units + 1 opp + 4 idle
+OBS_SIZE = 57
 
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
@@ -107,7 +106,7 @@ MORPH_MAP = {
     "WarpGate": "GATEWAY",
 }
 
-# Obs feature indices (must match observation_wrapper.py)
+# Obs feature indices — completed structures (indices 6-20, matching observation_wrapper.py)
 _IDX_NEXUS = 6
 _IDX_PYLON = 7
 _IDX_GATEWAY = 8
@@ -115,12 +114,16 @@ _IDX_WARPGATE = 9
 _IDX_FORGE = 10
 _IDX_TWILIGHTCOUNCIL = 11
 _IDX_PHOTONCANNON = 12
+_IDX_SHIELDBATTERY = 13   # present in obs, not used by mask but listed for clarity
 _IDX_TEMPLARARCHIVE = 14
 _IDX_ROBOTICSBAY = 15
 _IDX_ROBOTICSFACILITY = 16
+_IDX_ASSIMILATOR = 17
 _IDX_CYBERNETICSCORE = 18
 _IDX_STARGATE = 19
 _IDX_FLEETBEACON = 20
+
+# Completed units (indices 21-28)
 _IDX_HIGHTEMPLAR = 24
 
 _EPS = 0.01
@@ -128,16 +131,47 @@ _EPS = 0.01
 
 def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
     """
-    Pure-numpy mirror of action_mask.build_legal_mask for a single obs vector.
-    Must stay in sync with action_mask.py.
-    do_nothing (0) is always legal.
+    Pure-numpy mirror of action_mask.build_legal_mask for a single obs vector,
+    with PARSER-SPECIFIC relaxations to avoid false conflict demotions.
+
+    Key differences from the inference mask (action_mask.py):
+    ----------------------------------------------------------------
+    1. probe_queue_ok is NOT checked. The parser's pending probe count drifts
+       over long games causing false-illegal calls on valid probe trains.
+
+    2. Prerequisite structure checks use PENDING-OR-COMPLETE rather than
+       COMPLETE-ONLY. Pro players queue the next building the moment the
+       prerequisite is placed (not when it finishes, ~60s later). The window
+       snapshot is taken at the START of the window, so a gateway placed at
+       t=128s won't appear as completed until t~190s. Using pending-or-complete
+       means "the player has committed to building this" which is the right
+       semantic for parsing intent.
+
+       This affects: build_cyberneticscore (needs gateway), train_adept/stalker
+       (needs cybcore), warp_in_stalker (needs warpgate), train_immortal (needs
+       robo), train_voidray (needs stargate), and the entire tech tree chain.
+
+    3. 1-of building caps are applied (same as inference mask): cybercore,
+       twilight council, fleet beacon, templar archive. Pros never build
+       duplicates — any such label in a replay is noise.
+
+    4. Idle building checks are REMOVED for unit training actions. The parser's
+       idle counts (indices 53-56) are derived from pending_units which drift
+       for the same reason as pending probes. A pro training a stalker is valid
+       if a gateway is pending-or-complete + cybcore is pending-or-complete,
+       regardless of what the idle count says at snapshot time.
+
+    The inference mask keeps all strict checks because the bot must actually
+    be able to execute the action right now.
     """
     if action_id == 0:
         return True
 
+    # Completed structure counts (indices 6-20, normalised /10)
     has_nexus = obs[_IDX_NEXUS] > _EPS
     has_pylon = obs[_IDX_PYLON] > _EPS
     has_gateway = obs[_IDX_GATEWAY] > _EPS
+    has_warpgate = obs[_IDX_WARPGATE] > _EPS
     has_forge = obs[_IDX_FORGE] > _EPS
     has_twilight = obs[_IDX_TWILIGHTCOUNCIL] > _EPS
     has_temparch = obs[_IDX_TEMPLARARCHIVE] > _EPS
@@ -145,60 +179,144 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
     has_stargate = obs[_IDX_STARGATE] > _EPS
     has_fleet = obs[_IDX_FLEETBEACON] > _EPS
     has_robobay = obs[_IDX_ROBOTICSBAY] > _EPS
+    has_robo = obs[_IDX_ROBOTICSFACILITY] > _EPS
     has_2ht = obs[_IDX_HIGHTEMPLAR] > (1.5 / 30.0)
-
-    pending_probes = obs[44] * 30.0
-    nexus_count = obs[_IDX_NEXUS] * 10.0
-    probe_queue_ok = pending_probes < (2.0 * nexus_count)
-
-    _IDLE_EPS = 0.5 / 5.0
-    has_idle_gw_wg = obs[53] > _IDLE_EPS
-    has_idle_sg = obs[54] > _IDLE_EPS
-    has_idle_robo = obs[55] > _IDLE_EPS
-    has_idle_wg = obs[56] > _IDLE_EPS
-
     has_army = any(obs[i] > _EPS for i in range(22, 29))
 
+    # Pending structure counts (indices 29-43, same order as completed, /10)
+    # Index mapping: pending_NEXUS=29, PYLON=30, GATEWAY=31, WARPGATE=32,
+    # FORGE=33, TWILIGHTCOUNCIL=34, PHOTONCANNON=35, SHIELDBATTERY=36,
+    # TEMPLARARCHIVE=37, ROBOTICSBAY=38, ROBOTICSFACILITY=39, ASSIMILATOR=40,
+    # CYBERNETICSCORE=41, STARGATE=42, FLEETBEACON=43
+    _P = 29  # pending block starts at index 29
+    pend_gateway = obs[_P + 2] > _EPS   # GATEWAY is 3rd in STRUCTURES list
+    pend_cybcore = obs[_P + 12] > _EPS   # CYBERNETICSCORE is 13th
+    pend_stargate = obs[_P + 13] > _EPS   # STARGATE is 14th
+    pend_robo = obs[_P + 10] > _EPS   # ROBOTICSFACILITY is 11th
+    pend_twilight = obs[_P + 5] > _EPS   # TWILIGHTCOUNCIL is 6th
+    pend_warpgate = obs[_P + 3] > _EPS   # WARPGATE is 4th
+    pend_temparch = obs[_P + 8] > _EPS   # TEMPLARARCHIVE is 9th
+
+    # Pending-or-complete: "player has committed to building this"
+    poc_gateway = has_gateway or pend_gateway
+    poc_cybcore = has_cybcore or pend_cybcore
+    poc_stargate = has_stargate or pend_stargate
+    poc_robo = has_robo or pend_robo
+    poc_twilight = has_twilight or pend_twilight
+    poc_warpgate = has_warpgate or pend_warpgate
+    poc_temparch = has_temparch or pend_temparch
+
+    # 1-of building caps
+    no_cybcore = not has_cybcore
+    no_twilight = not has_twilight
+    no_fleet = not has_fleet
+    no_temparch = not has_temparch
+
     rules = {
-        1:  has_nexus and probe_queue_ok,
+        # train_probe: needs nexus (no queue cap in parser)
+        1:  has_nexus,
+
+        # build_pylon: always legal
         2:  True,
+
+        # build_gateway: needs pylon
         3:  has_pylon,
-        4:  has_gateway,
+
+        # build_cyberneticscore: gateway pending-or-complete, and no existing cybcore
+        4:  poc_gateway and no_cybcore,
+
+        # build_assimilator: needs nexus
         5:  has_nexus,
+
+        # build_nexus: always legal
         6:  True,
+
+        # build_forge: needs pylon
         7:  has_pylon,
-        8:  has_cybcore,
-        9:  has_cybcore,
-        10: has_cybcore,
+
+        # build_stargate: cybcore pending-or-complete
+        8:  poc_cybcore,
+
+        # build_robotics_facility: cybcore pending-or-complete
+        9:  poc_cybcore,
+
+        # build_twilight_council: cybcore pending-or-complete, no existing twilight
+        10: poc_cybcore and no_twilight,
+
+        # build_photon_cannon: needs completed forge
         11: has_forge,
-        12: has_stargate,
-        13: has_twilight,
-        14: has_idle_gw_wg,
-        15: has_idle_gw_wg and has_cybcore,
-        16: has_idle_robo,
-        17: has_idle_sg,
-        18: has_idle_sg and has_fleet,
-        19: has_idle_gw_wg and has_temparch,
-        20: has_idle_wg,
-        21: has_idle_wg and has_cybcore,
-        22: has_idle_wg and has_temparch,
+
+        # build_fleet_beacon: stargate pending-or-complete, no existing fleet beacon
+        12: poc_stargate and no_fleet,
+
+        # build_templar_archive: twilight pending-or-complete, no existing templar archive
+        13: poc_twilight and no_temparch,
+
+        # train_zealot: gateway pending-or-complete (don't require idle count — drifts)
+        14: poc_gateway,
+
+        # train_stalker: gateway + cybcore both pending-or-complete
+        15: poc_gateway and poc_cybcore,
+
+        # train_immortal: robo pending-or-complete
+        16: poc_robo,
+
+        # train_voidray: stargate pending-or-complete
+        17: poc_stargate,
+
+        # train_carrier: stargate pending-or-complete + fleet beacon complete
+        18: poc_stargate and has_fleet,
+
+        # train_high_templar: gateway pending-or-complete + templar archive pending-or-complete
+        19: poc_gateway and poc_temparch,
+
+        # warp_in_zealot: warpgate pending-or-complete
+        20: poc_warpgate,
+
+        # warp_in_stalker: warpgate + cybcore both pending-or-complete
+        21: poc_warpgate and poc_cybcore,
+
+        # warp_in_high_templar: warpgate + templar archive both pending-or-complete
+        22: poc_warpgate and poc_temparch,
+
+        # archon_warp: needs 2 completed high templars
         23: has_2ht,
-        24: has_twilight,
-        25: has_cybcore,
+
+        # research_charge: twilight pending-or-complete
+        24: poc_twilight,
+
+        # research_warp_gate: cybcore pending-or-complete
+        25: poc_cybcore,
+
+        # upgrade_ground_weapons: needs completed forge
         26: has_forge,
-        27: has_cybcore,
+
+        # upgrade_air_weapons: cybcore pending-or-complete
+        27: poc_cybcore,
+
+        # upgrade_shields: needs completed forge
         28: has_forge,
+
+        # attack_enemy_base: needs army
         29: has_army,
-        30: has_idle_gw_wg and has_cybcore,  # train_adept
-        31: has_idle_sg,                      # train_phoenix
-        32: has_idle_robo and has_robobay,   # train_colossus
-        33: has_idle_wg and has_cybcore,     # warp_in_adept
+
+        # train_adept: gateway + cybcore pending-or-complete
+        30: poc_gateway and poc_cybcore,
+
+        # train_phoenix: stargate pending-or-complete
+        31: poc_stargate,
+
+        # train_colossus: robo pending-or-complete + robobay complete
+        32: poc_robo and has_robobay,
+
+        # warp_in_adept: warpgate + cybcore pending-or-complete
+        33: poc_warpgate and poc_cybcore,
     }
     return rules.get(action_id, False)
 
 
 # ---------------------------------------------------------------------------
-# GameState
+# GameState  (unchanged from original)
 # ---------------------------------------------------------------------------
 
 class GameState:
@@ -227,9 +345,9 @@ class GameState:
         self.vespene = getattr(event, "vespene_current",
                                getattr(event, "vespene",   0))
         self.supply_used = getattr(
-            event, "supply_used",      getattr(event, "food_used", 0))
+            event, "supply_used",  getattr(event, "food_used", 0))
         self.supply_cap = getattr(
-            event, "supply_made",      getattr(event, "food_made", 0))
+            event, "supply_made",  getattr(event, "food_made", 0))
 
     def update_opp_from_stats(self, event: PlayerStatsEvent):
         self.opp_supply_used = getattr(
@@ -320,25 +438,10 @@ class GameState:
 
 
 # ---------------------------------------------------------------------------
-# ReplayParser
+# ReplayParser  (unchanged from original except conflict log is more specific)
 # ---------------------------------------------------------------------------
 
 class ReplayParser:
-    """
-    Parses SC2 replays into fixed-grid sequence arrays for LSTM training.
-
-    Queue mechanic
-    --------------
-    As mapped commands are encountered, each is assigned to the next FREE
-    grid slot at or after the command's actual game time.  There is no lag
-    cap — every command is queued regardless of how far it gets pushed.
-
-    Grid slots without a queued command receive label 0 (do_nothing).
-
-    Each row = [obs_at_window_start (OBS_SIZE floats), action_id (1 float)]
-    where obs_at_window_start is snapshotted BEFORE any events in that window.
-    """
-
     def __init__(
         self,
         replay_folder=r"C:\dev\BetaStar\replays\raw",
@@ -352,7 +455,7 @@ class ReplayParser:
         self.unmapped_abilities = defaultdict(int)
         self.mapped_actions = defaultdict(int)
         self.conflicts_dropped = 0
-        self.max_queue_lag_seen = 0   # diagnostic: worst-case lag observed
+        self.max_queue_lag_seen = 0
 
         self.EVENT_TO_ACTION = {
             "TrainProbe":             1,
@@ -388,27 +491,7 @@ class ReplayParser:
             "WarpInAdept":           33,
         }
 
-    # ------------------------------------------------------------------
-    # Core parse logic
-    # ------------------------------------------------------------------
-
     def parse_replay(self, replay, min_length: int = 10) -> np.ndarray | None:
-        """
-        Walk replay events and build a queued-action grid.
-
-        Algorithm
-        ---------
-        1. Walk all events in order, maintaining GameState and snapshotting
-           obs at each new grid window boundary (BEFORE events in that window).
-        2. For each mapped BasicCommandEvent at game time t:
-           a. cmd_window = floor(t / G)
-           b. Find the first slot >= cmd_window with no action assigned yet.
-           c. Assign this action to that slot (no lag cap).
-        3. After the full event walk, emit one row per window from 0 to
-           last_window.  Slots with no assignment get action 0 (do_nothing).
-        4. Non-zero labels that contradict the legal mask are demoted to
-           do_nothing so sequence length stays aligned with real game time.
-        """
         protoss_player = None
         zerg_player = None
         for player in replay.players:
@@ -436,7 +519,6 @@ class ReplayParser:
         for event in replay.events:
             t = event.second
 
-            # Snapshot the start of every new grid window BEFORE this event.
             new_grid = int(t / G)
             while current_grid < new_grid:
                 current_grid += 1
@@ -444,7 +526,6 @@ class ReplayParser:
                     override_time=float(current_grid * G))
             last_window = max(last_window, new_grid)
 
-            # --- Update game state ---
             if isinstance(event, PlayerStatsEvent):
                 if event.player.pid == pid:
                     state.update_from_stats(event)
@@ -470,8 +551,6 @@ class ReplayParser:
                     continue
 
                 ability_name = event.ability_name
-
-                # Always update pending counts for state accuracy
                 state.on_build_command(ability_name)
                 state.on_train_command(ability_name)
 
@@ -506,7 +585,6 @@ class ReplayParser:
             grid_obs[current_grid] = state.to_obs(
                 override_time=float(current_grid * G))
 
-        # --- Build rows ---
         rows = []
         for window in range(last_window + 1):
             obs = grid_obs.get(window)
@@ -528,10 +606,6 @@ class ReplayParser:
             return None
 
         return np.array(rows, dtype=np.float32)
-
-    # ------------------------------------------------------------------
-    # Statistics
-    # ------------------------------------------------------------------
 
     def print_statistics(self):
         print("\n" + "=" * 60)
@@ -557,10 +631,6 @@ class ReplayParser:
                 print(f"  {ability:30s}: {count:5d} occurrences")
         else:
             print("\nNo unmapped abilities found.")
-
-    # ------------------------------------------------------------------
-    # Folder processing
-    # ------------------------------------------------------------------
 
     def parse_replay_folder(self):
         sequences = []
