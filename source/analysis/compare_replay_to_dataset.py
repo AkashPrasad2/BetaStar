@@ -1,13 +1,27 @@
 """
-compare_replay_to_dataset.py - Compare raw replay events with parsed training data
+compare_replay_to_dataset.py - Comprehensive analysis of replay parsing
+
+This script shows exactly what happens when a replay is parsed into training data:
+- Which abilities are mapped to training actions
+- Which abilities are ignored (unmapped)
+- How actions are queued into 4-second windows
+- What conflicts occur (actions illegal at snapshot time)
+- Final action distribution in the training data
 """
 import sc2reader
 from sc2reader.events import BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent
 import numpy as np
+import sys
+import os
+
+# Add parent directory to path to import replay_parser
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from replay_parser import ReplayParser, GRID_INTERVAL_SECONDS
 
 # Load the same replay
-replay_path = r"C:\dev\BetaStar\replays\raw\Fjant v LiquidMaNa_ Game 2 - Goldenaura LE.SC2Replay"
-print(f"Loading replay: {replay_path}\n")
+replay_path = r"C:\dev\BetaStar\replays\raw\Abyssal Reef LE (54).SC2Replay"
+print(f"Loading replay: {replay_path}")
+print("=" * 120)
 replay = sc2reader.load_replay(replay_path, load_level=4)
 
 # Find Protoss player
@@ -22,158 +36,168 @@ if not protoss_player:
     exit()
 
 print(f"Protoss player: {protoss_player.name} (PID {protoss_player.pid})")
-print("=" * 100)
+print(f"Grid interval: {GRID_INTERVAL_SECONDS}s windows")
+print("=" * 120)
 
-# Collect all macro commands from replay
-macro_commands = []
+# Collect all command events from replay
+all_commands = []
 for event in replay.events:
     if isinstance(event, (BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent)):
         if event.player.pid == protoss_player.pid:
-            ability = event.ability_name
-            # Filter to only macro actions (build, train, research, upgrade)
-            if any(keyword in ability for keyword in ['Build', 'Train', 'WarpIn', 'Research', 'Morph', 'Archon']):
-                macro_commands.append((event.second, ability))
+            all_commands.append((event.second, event.ability_name))
 
-print(f"\nFound {len(macro_commands)} macro commands in replay:")
-print("-" * 100)
-print(f"{'Time':>8} | {'Command':<30} | {'4s Window':<10}")
-print("-" * 100)
+print(f"\nTotal command events from Protoss player: {len(all_commands)}")
 
-for t, ability in macro_commands[:50]:  # Show first 50
-    window = int(t / 4)
-    print(f"{t:7.1f}s | {ability:<30} | Window {window:3d} (t={window*4}s)")
+# Now show what the parser maps
+print("\n" + "=" * 120)
+print("STEP 1: EVENT TO ACTION MAPPING")
+print("=" * 120)
+print("\nThe parser uses EVENT_TO_ACTION dictionary to map replay abilities to action IDs.")
+print("Only mapped abilities become training labels. Unmapped abilities are ignored.\n")
 
-if len(macro_commands) > 50:
-    print(f"... and {len(macro_commands) - 50} more commands")
+# Import the actual EVENT_TO_ACTION from replay_parser to ensure accuracy
+parser = ReplayParser(debug=False)
+EVENT_TO_ACTION = parser.EVENT_TO_ACTION
 
-# Now show what the parser would map these to
-print("\n" + "=" * 100)
-print("MAPPING TO TRAINING ACTIONS:")
-print("=" * 100)
-
-EVENT_TO_ACTION = {
-    "TrainProbe":             1,
-    "BuildPylon":             2,
-    "BuildGateway":           3,
-    "BuildCyberneticsCore":   4,
-    "BuildAssimilator":       5,
-    "BuildNexus":             6,
-    "BuildForge":             7,
-    "BuildStargate":          8,
-    "BuildRoboticsFacility":  9,
-    "BuildTwilightCouncil":  10,
-    "BuildPhotonCannon":     11,
-    "BuildFleetBeacon":      12,
-    "BuildTemplarArchive":   13,
-    "TrainZealot":           14,
-    "TrainStalker":          15,
-    "TrainImmortal":         16,
-    "TrainVoidRay":          17,
-    "TrainCarrier":          18,
-    "TrainHighTemplar":      19,
-    "WarpInZealot":          20,
-    "WarpInStalker":         21,
-    "WarpInHighTemplar":     22,
-    "ArchonWarp":            23,
-    "MorphToArchon":         23,
-    "ResearchCharge":        24,
-    "ResearchWarpGate":      25,
+# Action ID to name mapping (must cover all 34 actions including gaps)
+ACTION_NAMES = {
+    0: "do_nothing",
+    1: "train_probe",
+    2: "build_pylon",
+    3: "build_gateway",
+    4: "build_cyberneticscore",
+    5: "build_assimilator",
+    6: "build_nexus",
+    7: "build_forge",
+    8: "build_stargate",
+    9: "build_robotics_facility",
+    10: "build_twilight_council",
+    11: "build_photon_cannon",
+    12: "build_fleet_beacon",
+    13: "build_templar_archive",
+    14: "train_zealot",
+    15: "train_stalker",
+    16: "train_immortal",
+    17: "train_voidray",
+    18: "train_carrier",
+    19: "train_high_templar",
+    20: "warp_in_zealot",
+    21: "warp_in_stalker",
+    22: "warp_in_high_templar",
+    23: "archon_warp",
+    24: "research_charge",
+    25: "research_warp_gate",
+    26: "upgrade_ground_weapons",
+    27: "upgrade_air_weapons",
+    28: "upgrade_shields",
+    29: "attack_enemy_base",
+    30: "train_adept",
+    31: "train_phoenix",
+    32: "train_colossus",
+    33: "warp_in_adept",
 }
 
-ACTIONS = [
-    "do_nothing",               # 0
-    "train_probe",              # 1
-    "build_pylon",              # 2
-    "build_gateway",            # 3
-    "build_cyberneticscore",    # 4
-    "build_assimilator",        # 5
-    "build_nexus",              # 6
-    "build_forge",              # 7
-    "build_stargate",           # 8
-    "build_robotics_facility",  # 9
-    "build_twilight_council",   # 10
-    "build_photon_cannon",      # 11
-    "build_fleet_beacon",       # 12
-    "build_templar_archive",    # 13
-    "train_zealot",             # 14
-    "train_stalker",            # 15
-    "train_immortal",           # 16
-    "train_voidray",            # 17
-    "train_carrier",            # 18
-    "train_high_templar",       # 19
-    "warp_in_zealot",           # 20
-    "warp_in_stalker",          # 21
-    "warp_in_high_templar",     # 22
-    "archon_warp_selecton",     # 23
-    "research_charge",          # 24
-    "research_warp_gate",       # 25
-    "upgrade_ground_weapons",   # 26
-    "upgrade_air_weapons",      # 27
-    "upgrade_shields",          # 28
-    "attack_enemy_base",        # 29
-]
+# Categorize all commands
+mapped_commands = []
+unmapped_commands = []
 
-mapped_count = 0
-unmapped_count = 0
-unmapped_abilities = set()
-
-print(f"{'Time':>8} | {'Replay Event':<30} | {'Action ID':<10} | {'Training Action':<30} | {'Status':<10}")
-print("-" * 100)
-
-for t, ability in macro_commands[:50]:
+for t, ability in all_commands:
     action_id = EVENT_TO_ACTION.get(ability)
     if action_id is not None:
-        action_name = ACTIONS[action_id]
-        status = "✓ MAPPED"
-        mapped_count += 1
-        print(
-            f"{t:7.1f}s | {ability:<30} | {action_id:<10} | {action_name:<30} | {status}")
+        mapped_commands.append((t, ability, action_id))
     else:
-        status = "✗ UNMAPPED"
-        unmapped_count += 1
-        unmapped_abilities.add(ability)
-        print(
-            f"{t:7.1f}s | {ability:<30} | {'N/A':<10} | {'(not in training set)':<30} | {status}")
+        unmapped_commands.append((t, ability))
 
-if len(macro_commands) > 50:
-    # Count remaining
-    for t, ability in macro_commands[50:]:
-        action_id = EVENT_TO_ACTION.get(ability)
-        if action_id is not None:
-            mapped_count += 1
-        else:
-            unmapped_count += 1
-            unmapped_abilities.add(ability)
+print(f"Mapped commands (will be in training data):   {len(mapped_commands)}")
+print(f"Unmapped commands (ignored):                   {len(unmapped_commands)}")
 
-print("\n" + "=" * 100)
-print("SUMMARY:")
-print("=" * 100)
-print(f"Total macro commands in replay: {len(macro_commands)}")
-print(
-    f"Mapped to training actions:     {mapped_count} ({100*mapped_count/len(macro_commands):.1f}%)")
-print(
-    f"Unmapped (ignored):             {unmapped_count} ({100*unmapped_count/len(macro_commands):.1f}%)")
+# Show mapped commands
+if mapped_commands:
+    print(f"\n{'Time':>8} | {'Replay Ability':<35} | {'→':<3} | {'Action ID':<10} | {'Training Action Name':<30}")
+    print("-" * 120)
+    for t, ability, action_id in mapped_commands[:30]:
+        action_name = ACTION_NAMES[action_id]
+        print(f"{t:7.1f}s | {ability:<35} | {'→':<3} | {action_id:<10} | {action_name:<30}")
+    if len(mapped_commands) > 30:
+        print(f"... and {len(mapped_commands) - 30} more mapped commands")
 
-if unmapped_abilities:
-    print(f"\nUnmapped abilities found:")
-    for ability in sorted(unmapped_abilities):
-        print(f"  - {ability}")
-    print("\nThese commands will be ignored during training data generation.")
+# Show unmapped commands
+if unmapped_commands:
+    print(f"\n\nUNMAPPED ABILITIES (these are IGNORED and will NOT appear in training data):")
+    print("-" * 120)
+    unmapped_set = {}
+    for t, ability in unmapped_commands:
+        if ability not in unmapped_set:
+            unmapped_set[ability] = []
+        unmapped_set[ability].append(t)
+    
+    for ability in sorted(unmapped_set.keys()):
+        times = unmapped_set[ability]
+        print(f"  {ability:<40} - {len(times):3d} occurrences (e.g., at t={times[0]:.1f}s)")
+    print(f"\nThese {len(unmapped_commands)} commands are filtered out during parsing.")
 else:
-    print("\n✓ All macro commands are mapped to training actions!")
+    print("\n✓ All commands are mapped!")
 
-# Show action distribution
-print("\n" + "=" * 100)
-print("ACTION DISTRIBUTION IN REPLAY:")
-print("=" * 100)
+# Now actually parse the replay to see what ends up in the dataset
+print("\n" + "=" * 120)
+print("STEP 2: PARSING REPLAY INTO TRAINING DATA")
+print("=" * 120)
+print("\nNow running the actual parser to see what ends up in the final dataset...\n")
 
-action_counts = {}
-for t, ability in macro_commands:
-    action_id = EVENT_TO_ACTION.get(ability)
-    if action_id is not None:
-        action_name = ACTIONS[action_id]
-        action_counts[action_name] = action_counts.get(action_name, 0) + 1
+parser_with_debug = ReplayParser(debug=True)
+seq = parser_with_debug.parse_replay(replay)
 
-for action_name in sorted(action_counts.keys(), key=lambda x: action_counts[x], reverse=True):
-    count = action_counts[action_name]
-    print(f"  {action_name:<30}: {count:3d} times")
+if seq is None:
+    print("\nReplay was too short and was skipped.")
+    exit()
+
+print(f"\n{'='*120}")
+print("STEP 3: FINAL TRAINING DATA ANALYSIS")
+print("=" * 120)
+
+actions = seq[:, 57].astype(int)  # OBS_SIZE = 57, action is the last column
+print(f"\nTotal windows in parsed sequence: {len(actions)}")
+print(f"Grid interval: {GRID_INTERVAL_SECONDS}s per window")
+print(f"Game duration covered: {len(actions) * GRID_INTERVAL_SECONDS}s ({len(actions) * GRID_INTERVAL_SECONDS / 60:.1f} minutes)\n")
+
+# Count action distribution in final dataset
+action_distribution = {}
+for action_id in actions:
+    action_distribution[action_id] = action_distribution.get(action_id, 0) + 1
+
+print("ACTION DISTRIBUTION IN FINAL TRAINING DATA:")
+print("-" * 120)
+print(f"{'Action ID':<12} | {'Action Name':<35} | {'Count':<10} | {'Percentage':<12}")
+print("-" * 120)
+
+for action_id in sorted(action_distribution.keys()):
+    count = action_distribution[action_id]
+    pct = 100 * count / len(actions)
+    action_name = ACTION_NAMES.get(action_id, f"UNKNOWN_{action_id}")
+    print(f"{action_id:<12} | {action_name:<35} | {count:<10} | {pct:>6.2f}%")
+
+print("\n" + "=" * 120)
+print("KEY INSIGHTS:")
+print("=" * 120)
+
+do_nothing_count = action_distribution.get(0, 0)
+do_nothing_pct = 100 * do_nothing_count / len(actions)
+print(f"\n1. do_nothing (action 0) represents {do_nothing_pct:.1f}% of training data")
+print(f"   This is expected - most 4s windows have no macro action.")
+
+action_count = len(actions) - do_nothing_count
+print(f"\n2. Actual macro actions: {action_count} out of {len(actions)} windows ({100*action_count/len(actions):.1f}%)")
+
+print(f"\n3. Commands in replay vs training data:")
+print(f"   - Mapped commands in replay: {len(mapped_commands)}")
+print(f"   - Actions in training data:  {action_count}")
+if len(mapped_commands) > action_count:
+    diff = len(mapped_commands) - action_count
+    print(f"   - Difference: {diff} commands were demoted to do_nothing due to conflicts")
+    print(f"     (action was illegal at the snapshot time - see CONFLICT messages above)")
+elif len(mapped_commands) < action_count:
+    print(f"   - Note: Some windows may have multiple commands queued")
+
+print(f"\n4. Unmapped abilities: {len(unmapped_commands)} commands ignored (not in EVENT_TO_ACTION)")
+
+print("\n" + "=" * 120)
