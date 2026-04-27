@@ -37,7 +37,7 @@ class ObservationWrapper:
     """
     Converts game state into a flat vector for neural network input.
 
-    Feature layout (57 total):
+    Feature layout (56 total):
         [0]     game time (normalized)
         [1]     minerals
         [2]     vespene
@@ -48,11 +48,10 @@ class ObservationWrapper:
         [21:29] completed unit counts        (8)
         [29:44] in-progress structure counts (15)
         [44:52] in-progress unit counts      (8)
-        [52]    opponent supply_used
-        [53]    idle gateway+warpgate count  (normalised /5)
-        [54]    idle stargate count          (normalised /5)
-        [55]    idle robotics facility count (normalised /5)
-        [56]    idle warpgate count          (normalised /5)
+        [52]    idle gateway+warpgate count  (normalised /5)
+        [53]    idle stargate count          (normalised /5)
+        [54]    idle robotics facility count (normalised /5)
+        [55]    idle warpgate count          (normalised /5)
     """
 
     def __init__(self):
@@ -60,19 +59,18 @@ class ObservationWrapper:
 
     def calculate_obs_size(self):
         # 6 base + 15 structs + 8 units + 15 structs_pending + 8 units_pending
-        # + 1 opp + 4 idle production buildings
+        # + 4 idle production buildings
         return (6
                 + len(PROTOSS_STRUCTURES)
                 + len(PROTOSS_UNITS)
                 + len(PROTOSS_STRUCTURES)
                 + len(PROTOSS_UNITS)
-                + 1
                 + 4)
 
     def get_observation(self, bot: BotAI, opponent=None):
         obs = []
 
-        # --- Base features ---
+        # Base features
         obs.append(bot.time / 720.0)
         obs.append(bot.minerals / 1800.0)
         obs.append(bot.vespene / 700.0)
@@ -83,26 +81,23 @@ class ObservationWrapper:
         ideal_workers = bot.townhalls.amount * 22
         obs.append(worker_supply / max(ideal_workers, 1))
 
-        # --- Completed structures ---
+        # Completed structures
         for structure in PROTOSS_STRUCTURES:
             obs.append(bot.structures(structure).ready.amount / 10.0)
 
-        # --- Completed units ---
+        # Completed units
         for unit in PROTOSS_UNITS:
             obs.append(bot.units(unit).amount / 30.0)
 
-        # --- In-progress structures (under construction) ---
+        # In-progress structures (under construction)
         for structure in PROTOSS_STRUCTURES:
             obs.append(bot.structures(structure).not_ready.amount / 10.0)
 
-        # --- In-progress units (queued in production buildings) ---
+        # In-progress units (queued in production buildings)
         for unit in PROTOSS_UNITS:
             obs.append(bot.already_pending(unit) / 30.0)
 
-        # --- Opponent ---
-        obs.append(opponent.supply_used / 200.0)
-
-        # --- Idle production buildings (indices 53-56) ---
+        # Idle production buildings (indices 52-55)
         # Gateway + Warpgate combined pool: idle if building count exceeds
         # the number of gateway-type units currently in production.
         gw_count = bot.structures(UnitTypeId.GATEWAY).ready.amount
@@ -128,9 +123,9 @@ class ObservationWrapper:
         # not currently warping anything.
         idle_wg = max(0, wg_count - max(0, gw_wg_busy - gw_count))
 
-        obs.append(idle_gw_wg / 5.0)   # index 53
-        obs.append(idle_sg / 5.0)   # index 54
-        obs.append(idle_robo / 5.0)   # index 55
-        obs.append(idle_wg / 5.0)   # index 56
+        obs.append(idle_gw_wg / 5.0)   # index 52
+        obs.append(idle_sg / 5.0)   # index 53
+        obs.append(idle_robo / 5.0)   # index 54
+        obs.append(idle_wg / 5.0)   # index 55
 
         return obs

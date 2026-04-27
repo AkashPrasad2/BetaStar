@@ -31,7 +31,7 @@ class ProtossBot(BotAI):
         await rally_idle_army(self)
         await auto_attack(self)
 
-        # --- Model inference on cooldown ---
+        # Model cooldown (subtract 1 at each frame)
         if self.action_cooldown > 0:
             self.action_cooldown -= 1
             return

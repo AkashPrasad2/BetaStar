@@ -4,9 +4,6 @@ conflict_diagnostic.py
 Runs the full mask/label conflict check on the parsed dataset and prints
 exactly which (action_id, missing_prerequisite) pairs are causing conflicts.
 
-Run this from the source directory:
-    python conflict_diagnostic.py
-
 This tells you precisely where the numpy mask in replay_parser.py and
 the PyTorch mask in action_mask.py are disagreeing.
 """
@@ -16,7 +13,7 @@ import torch
 from collections import defaultdict
 
 from model import SequenceDataset, OBS_SIZE
-from action_mask import build_legal_mask, NUM_ACTIONS
+from action_mask import build_training_mask, NUM_ACTIONS
 
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 
@@ -52,6 +49,10 @@ ACTIONS = [
     "upgrade_air_weapons",      # 27
     "upgrade_shields",          # 28
     "attack_enemy_base",        # 29
+    "train_adept",              # 30
+    "train_phoenix",            # 31
+    "train_colossus",           # 32
+    "warp_in_adept",            # 33
 ]
 
 # Obs feature indices for completed structures (same as action_mask.py)
@@ -72,7 +73,7 @@ feature_names = (
     + [f"unit_{u}" for u in UNIT_NAMES]
     + [f"pend_{s}" for s in STRUCTURE_NAMES]
     + [f"pend_{u}" for u in UNIT_NAMES]
-    + ["opp_supply"]
+    + ["idle_gw_wg", "idle_sg", "idle_robo", "idle_wg"]
 )
 
 
@@ -88,8 +89,8 @@ def main():
     prereq_missing = defaultdict(lambda: defaultdict(int))
 
     for obs_seq, act_seq in dataset.sequences:
-        # Build mask for the entire sequence at once
-        legal = build_legal_mask(obs_seq)  # (T, NUM_ACTIONS)
+        # Build mask for the entire sequence at once (training mask = ground truth)
+        legal = build_training_mask(obs_seq)  # (T, NUM_ACTIONS)
 
         for t in range(len(act_seq)):
             a = act_seq[t].item()

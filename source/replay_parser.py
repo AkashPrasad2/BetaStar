@@ -72,7 +72,7 @@ UNITS = [
     "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON", "IMMORTAL", "CARRIER", "VOIDRAY",
 ]
 
-OBS_SIZE = 57
+OBS_SIZE = 56
 
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
@@ -156,7 +156,7 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> bool:
        duplicates — any such label in a replay is noise.
 
     4. Idle building checks are REMOVED for unit training actions. The parser's
-       idle counts (indices 53-56) are derived from pending_units which drift
+       idle counts (indices 52-55) are derived from pending_units which drift
        for the same reason as pending probes. A pro training a stalker is valid
        if a gateway is pending-or-complete + cybcore is pending-or-complete,
        regardless of what the idle count says at snapshot time.
@@ -408,9 +408,8 @@ class GameState:
             obs.append(self.pending_structures[s] / 10.0)
         for u in UNITS:
             obs.append(self.pending_units[u] / 30.0)
-        obs.append(self.opp_supply_used / 200.0)
 
-        # Idle production building features (indices 53-56)
+        # Idle production building features (indices 52-55)
         gw_wg_total = self.counts["GATEWAY"] + self.counts["WARPGATE"]
         gw_wg_busy = (self.pending_units["ZEALOT"]
                       + self.pending_units["STALKER"]
@@ -427,10 +426,10 @@ class GameState:
         idle_wg = max(
             0, wg_count - max(0, gw_wg_busy - self.counts["GATEWAY"]))
 
-        obs.append(idle_gw_wg / 5.0)   # index 53
-        obs.append(idle_sg / 5.0)   # index 54
-        obs.append(idle_robo / 5.0)   # index 55
-        obs.append(idle_wg / 5.0)   # index 56
+        obs.append(idle_gw_wg / 5.0)   # index 52
+        obs.append(idle_sg / 5.0)   # index 53
+        obs.append(idle_robo / 5.0)   # index 54
+        obs.append(idle_wg / 5.0)   # index 55
 
         assert len(
             obs) == OBS_SIZE, f"Obs size mismatch: {len(obs)} vs {OBS_SIZE}"
