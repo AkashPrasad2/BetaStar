@@ -206,7 +206,7 @@ async def execute_action(action_id: int, bot: BotAI):
                     forge.research(UpgradeId.PROTOSSSHIELDSLEVEL3)
 
     elif action_name == "attack_enemy_base":
-        for unit in bot.units.of_type([UnitTypeId.ZEALOT, UnitTypeId.STALKER]).idle:
+        for unit in bot.units.of_type(ARMY).idle:
             unit.attack(bot.enemy_start_locations[0])
 
     elif action_name == "train_adept":
