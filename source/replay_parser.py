@@ -72,7 +72,7 @@ UNITS = [
     "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON", "IMMORTAL", "CARRIER", "VOIDRAY",
 ]
 
-OBS_SIZE = 56
+OBS_SIZE = 59
 
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
@@ -104,6 +104,21 @@ TRAIN_COMMAND_TO_UNIT = {
 
 MORPH_MAP = {
     "WarpGate": "GATEWAY",
+}
+
+# Maps upgrade research ability names to (upgrade_key, level)
+# Using pending-or-complete convention: level is set when research is commanded.
+UPGRADE_COMMAND_TO_LEVEL = {
+    "UpgradeGroundWeapons1": ("GROUND_WEAPONS", 1),
+    "UpgradeGroundWeapons2": ("GROUND_WEAPONS", 2),
+    "UpgradeGroundWeapons3": ("GROUND_WEAPONS", 3),
+    "UpgradeShields1":       ("SHIELDS",        1),
+    "UpgradeShields2":       ("SHIELDS",        2),
+    "UpgradesShields3":      ("SHIELDS",        3),  # sc2reader typo variant
+    "UpgradeShields3":       ("SHIELDS",        3),
+    "UpgradeAirWeapons1":    ("AIR_WEAPONS",    1),
+    "UpgradeAirWeapons2":    ("AIR_WEAPONS",    2),
+    "UpgradeAirWeapons3":    ("AIR_WEAPONS",    3),
 }
 
 # Obs feature indices — completed structures (indices 6-20, matching observation_wrapper.py)
@@ -336,6 +351,10 @@ class GameState:
         self.counts["NEXUS"] = 1
         self.counts["PROBE"] = 12
 
+        # Upgrade levels: highest level whose research has been commanded.
+        # Pending-or-complete convention (set when research command fires).
+        self.upgrade_lvls = {"GROUND_WEAPONS": 0, "SHIELDS": 0, "AIR_WEAPONS": 0}
+
         self.opp_supply_used = 0.0
 
     def update_from_stats(self, event: PlayerStatsEvent):
@@ -362,6 +381,13 @@ class GameState:
         key = TRAIN_COMMAND_TO_UNIT.get(ability_name)
         if key:
             self.pending_units[key] += 1
+
+    def on_upgrade_command(self, ability_name: str):
+        """Record the highest upgrade level commanded (pending-or-complete)."""
+        entry = UPGRADE_COMMAND_TO_LEVEL.get(ability_name)
+        if entry:
+            key, lvl = entry
+            self.upgrade_lvls[key] = max(self.upgrade_lvls[key], lvl)
 
     def unit_born_or_done(self, unit_type_name: str):
         unit_key = UNIT_NAME_MAP.get(unit_type_name)
@@ -431,6 +457,11 @@ class GameState:
         obs.append(idle_robo / 5.0)   # index 54
         obs.append(idle_wg / 5.0)   # index 55
 
+        # Upgrade levels (indices 56-58): highest level commanded, normalised /3.
+        obs.append(self.upgrade_lvls["GROUND_WEAPONS"] / 3.0)  # index 56
+        obs.append(self.upgrade_lvls["SHIELDS"] / 3.0)         # index 57
+        obs.append(self.upgrade_lvls["AIR_WEAPONS"] / 3.0)     # index 58
+
         assert len(
             obs) == OBS_SIZE, f"Obs size mismatch: {len(obs)} vs {OBS_SIZE}"
         return obs
@@ -484,6 +515,17 @@ class ReplayParser:
             "MorphToArchon":         23,
             "ResearchCharge":        24,
             "ResearchWarpGate":      25,
+            # Upgrade research — each level maps to the same generic action
+            "UpgradeGroundWeapons1": 26,
+            "UpgradeGroundWeapons2": 26,
+            "UpgradeGroundWeapons3": 26,
+            "UpgradeAirWeapons1":    27,
+            "UpgradeAirWeapons2":    27,
+            "UpgradeAirWeapons3":    27,
+            "UpgradeShields1":       28,
+            "UpgradeShields2":       28,
+            "UpgradesShields3":      28,  # sc2reader typo variant
+            "UpgradeShields3":       28,
             "TrainAdept":            30,
             "TrainPhoenix":          31,
             "TrainColossus":         32,
@@ -552,6 +594,7 @@ class ReplayParser:
                 ability_name = event.ability_name
                 state.on_build_command(ability_name)
                 state.on_train_command(ability_name)
+                state.on_upgrade_command(ability_name)
 
                 action_id = self.EVENT_TO_ACTION.get(ability_name)
                 if action_id is None:

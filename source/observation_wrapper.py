@@ -1,5 +1,6 @@
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
 
 # 15 structures
 PROTOSS_STRUCTURES = [
@@ -37,7 +38,7 @@ class ObservationWrapper:
     """
     Converts game state into a flat vector for neural network input.
 
-    Feature layout (56 total):
+    Feature layout (59 total):
         [0]     game time (normalized)
         [1]     minerals
         [2]     vespene
@@ -52,6 +53,9 @@ class ObservationWrapper:
         [53]    idle stargate count          (normalised /5)
         [54]    idle robotics facility count (normalised /5)
         [55]    idle warpgate count          (normalised /5)
+        [56]    ground weapons level         (normalised /3)
+        [57]    shields level                (normalised /3)
+        [58]    air weapons level            (normalised /3)
     """
 
     def __init__(self):
@@ -59,13 +63,14 @@ class ObservationWrapper:
 
     def calculate_obs_size(self):
         # 6 base + 15 structs + 8 units + 15 structs_pending + 8 units_pending
-        # + 4 idle production buildings
+        # + 4 idle production buildings + 3 upgrade levels
         return (6
                 + len(PROTOSS_STRUCTURES)
                 + len(PROTOSS_UNITS)
                 + len(PROTOSS_STRUCTURES)
                 + len(PROTOSS_UNITS)
-                + 4)
+                + 4
+                + 3)
 
     def get_observation(self, bot: BotAI, opponent=None):
         obs = []
@@ -127,5 +132,37 @@ class ObservationWrapper:
         obs.append(idle_sg / 5.0)   # index 53
         obs.append(idle_robo / 5.0)   # index 54
         obs.append(idle_wg / 5.0)   # index 55
+
+        # Upgrade levels: committed = completed OR currently being researched.
+        # Matches the pending-or-complete convention used in the replay parser.
+        def committed_upgrade_level(upgrade_ids):
+            lvl = 0
+            for i, uid in enumerate(upgrade_ids, start=1):
+                if uid in bot.state.upgrades:
+                    lvl = i          # level is done, keep checking higher
+                elif bot.already_pending_upgrade(uid) > 0:
+                    lvl = i          # level is in progress
+                    break            # can't have higher levels pending yet
+            return lvl
+
+        gw_lvl = committed_upgrade_level([
+            UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
+            UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2,
+            UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3,
+        ])
+        sh_lvl = committed_upgrade_level([
+            UpgradeId.PROTOSSSHIELDSLEVEL1,
+            UpgradeId.PROTOSSSHIELDSLEVEL2,
+            UpgradeId.PROTOSSSHIELDSLEVEL3,
+        ])
+        aw_lvl = committed_upgrade_level([
+            UpgradeId.PROTOSSAIRWEAPONSLEVEL1,
+            UpgradeId.PROTOSSAIRWEAPONSLEVEL2,
+            UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
+        ])
+
+        obs.append(gw_lvl / 3.0)   # index 56
+        obs.append(sh_lvl / 3.0)   # index 57
+        obs.append(aw_lvl / 3.0)   # index 58
 
         return obs

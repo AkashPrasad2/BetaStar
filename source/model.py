@@ -2,7 +2,7 @@
 SC2 Protoss Imitation Learning — MLP Model + Training Script
 =============================================================
 Architecture:
-    obs (56,) -> Linear encoder (56->64) -> MLP head (64->128->64->34 logits)
+    obs (59,) -> Linear encoder (59->64) -> MLP head (64->128->64->34 logits)
 
 Legal-action masking applied consistently in BOTH the training loop
 and predict_action, via the shared action_mask module.
@@ -24,7 +24,7 @@ from action_mask import apply_legal_mask, apply_training_mask
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
 
-OBS_SIZE = 56   # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 4 idle
+OBS_SIZE = 59   # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 4 idle + 3 upgrade levels
 NUM_ACTIONS = 35   # action 0 = do_nothing, kept for index stability
 
 # Model hyper-params

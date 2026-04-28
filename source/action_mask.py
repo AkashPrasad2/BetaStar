@@ -88,6 +88,13 @@ IDX_IDLE_SG = 53
 IDX_IDLE_ROBO = 54
 IDX_IDLE_WG = 55
 
+# ---------------------------------------------------------------------------
+# Obs feature indices — upgrade levels (indices 56-58)
+# ---------------------------------------------------------------------------
+IDX_GROUND_WEAPONS_LVL = 56
+IDX_SHIELDS_LVL = 57
+IDX_AIR_WEAPONS_LVL = 58
+
 EPS = 0.01
 
 
@@ -227,14 +234,14 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 25: research_warp_gate — needs Cybernetics Core
     mask[:, 25] = has_cybcore
 
-    # Action 26: upgrade_ground_weapons — needs Forge
-    mask[:, 26] = has_forge
+    # Action 26: upgrade_ground_weapons — needs Forge, level < 3
+    mask[:, 26] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
 
-    # Action 27: upgrade_air_weapons — needs Cybernetics Core
-    mask[:, 27] = has_cybcore
+    # Action 27: upgrade_air_weapons — needs Cybernetics Core, level < 3
+    mask[:, 27] = has_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
 
-    # Action 28: upgrade_shields — needs Forge
-    mask[:, 28] = has_forge
+    # Action 28: upgrade_shields — needs Forge, level < 3
+    mask[:, 28] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
 
     # Action 29: attack_enemy_base — needs at least one combat unit
     mask[:, 29] = has_army
@@ -420,14 +427,14 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 25: research_warp_gate — cybcore poc
     mask[:, 25] = poc_cybcore
 
-    # Action 26: upgrade_ground_weapons — needs completed Forge
-    mask[:, 26] = has_forge
+    # Action 26: upgrade_ground_weapons \u2014 needs completed Forge, level < 3
+    mask[:, 26] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
 
-    # Action 27: upgrade_air_weapons — cybcore poc
-    mask[:, 27] = poc_cybcore
+    # Action 27: upgrade_air_weapons \u2014 cybcore poc, level < 3
+    mask[:, 27] = poc_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
 
-    # Action 28: upgrade_shields — needs completed Forge
-    mask[:, 28] = has_forge
+    # Action 28: upgrade_shields \u2014 needs completed Forge, level < 3
+    mask[:, 28] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
 
     # Action 29: attack_enemy_base — needs army
     mask[:, 29] = has_army
