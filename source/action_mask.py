@@ -319,6 +319,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     pend_robo     = obs[:, IDX_PEND_ROBOTICSFACILITY] > EPS
     pend_twilight = obs[:, IDX_PEND_TWILIGHTCOUNCIL] > EPS
     pend_temparch = obs[:, IDX_PEND_TEMPLARARCHIVE]  > EPS
+    pend_forge    = obs[:, IDX_PEND_FORGE]           > EPS
 
     # --- Pending-or-complete: player has committed to building this ---
     poc_gateway  = has_gateway  | pend_gateway
@@ -328,6 +329,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     poc_robo     = has_robo     | pend_robo
     poc_twilight = has_twilight | pend_twilight
     poc_temparch = has_temparch | pend_temparch
+    poc_forge    = has_forge    | pend_forge
 
     # --- 1-of building caps (same as inference — pros never build a second) ---
     no_cybcore  = ~has_cybcore
@@ -427,14 +429,14 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 25: research_warp_gate — cybcore poc
     mask[:, 25] = poc_cybcore
 
-    # Action 26: upgrade_ground_weapons \u2014 needs completed Forge, level < 3
-    mask[:, 26] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
+    # Action 26: upgrade_ground_weapons \u2014 forge poc (no level cap in training to handle lag)
+    mask[:, 26] = poc_forge
 
-    # Action 27: upgrade_air_weapons \u2014 cybcore poc, level < 3
-    mask[:, 27] = poc_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
+    # Action 27: upgrade_air_weapons \u2014 cybcore poc (no level cap in training)
+    mask[:, 27] = poc_cybcore
 
-    # Action 28: upgrade_shields \u2014 needs completed Forge, level < 3
-    mask[:, 28] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
+    # Action 28: upgrade_shields \u2014 forge poc (no level cap in training)
+    mask[:, 28] = poc_forge
 
     # Action 29: attack_enemy_base — needs army
     mask[:, 29] = has_army

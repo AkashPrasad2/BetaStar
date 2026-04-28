@@ -9,8 +9,13 @@ the PyTorch mask in action_mask.py are disagreeing.
 """
 
 import numpy as np
+import os
+import sys
 import torch
 from collections import defaultdict
+
+# Ensure the parent directory (source) is in the path so we can import model and action_mask
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model import SequenceDataset, OBS_SIZE
 from action_mask import build_training_mask, NUM_ACTIONS
