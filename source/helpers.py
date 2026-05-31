@@ -160,9 +160,9 @@ async def rally_idle_army(bot: BotAI):
     if not army:
         return
 
-    # Use move (not attack-move) so units don't wander chasing targets
+    # Use attack-move so units engage enemies on the way
     for unit in army:
-        unit.move(staging)
+        unit.attack(staging)
 
     print(f"[{bot.time:.0f}s] Rallying {army.amount} unit(s) → staging at {staging}")
 
@@ -215,7 +215,7 @@ async def defend_structures(bot: BotAI):
         army = bot.units.of_type(ARMY_TYPES)
         if staging and army:
             for unit in army:
-                unit.move(staging)
+                unit.attack(staging)
         bot._defending = False
         print(f"[{bot.time:.0f}s] DEFEND: Threat cleared. Returning {army.amount if army else 0} "
               f"unit(s) to staging.")

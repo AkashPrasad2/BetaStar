@@ -50,7 +50,7 @@ SEED = 54
 MODEL_SELECTION = "accuracy"
 
 # keep the decisions diverse (not applied during training, only inference)
-INFERENCE_TEMPERATURE = 1.2
+INFERENCE_TEMPERATURE = 3
 
 # Cap context window at inference to bound latency
 MAX_CONTEXT = 256
@@ -240,7 +240,8 @@ def _apply_mask_real_only(
     masked = flat_logits.clone()
 
     if real_mask.any():
-        real_logits = apply_training_mask(flat_logits[real_mask], flat_obs[real_mask])
+        real_logits = apply_training_mask(
+            flat_logits[real_mask], flat_obs[real_mask])
         masked[real_mask] = real_logits
 
     return masked
@@ -416,9 +417,11 @@ def train():
                 "max_seq_len":     MAX_SEQ_LEN,
             }, best_path)
             if MODEL_SELECTION == "accuracy":
-                print(f"         ^ new best (acc={val_acc:.3%}) saved to {best_path}")
+                print(
+                    f"         ^ new best (acc={val_acc:.3%}) saved to {best_path}")
             else:
-                print(f"         ^ new best (loss={val_loss:.4f}) saved to {best_path}")
+                print(
+                    f"         ^ new best (loss={val_loss:.4f}) saved to {best_path}")
 
     if MODEL_SELECTION == "accuracy":
         print(f"\nTraining complete. Best val accuracy: {best_val_metric:.3%}")
