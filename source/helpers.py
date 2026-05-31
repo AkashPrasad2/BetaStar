@@ -40,19 +40,22 @@ DEFEND_RECHECK_INTERVAL = 5     # seconds between defense rechecks
 
 async def build_structure(bot: BotAI, building: UnitTypeId):
     """Helper to systematically build structures depending on the type."""
+    
+    # Get starting nexus (closest to start_location)
+    starting_nexus = bot.townhalls.closest_to(bot.start_location) if bot.townhalls else None
 
     if building == UnitTypeId.ASSIMILATOR:
-        if bot.can_afford(UnitTypeId.ASSIMILATOR) and bot.townhalls:
-            for vespene in bot.vespene_geyser.closer_than(15, bot.townhalls.first):
+        if bot.can_afford(UnitTypeId.ASSIMILATOR) and starting_nexus:
+            for vespene in bot.vespene_geyser.closer_than(15, starting_nexus):
                 if bot.gas_buildings.filter(lambda u: u.distance_to(vespene) < 1):
                     continue
                 await bot.build(UnitTypeId.ASSIMILATOR, vespene)
                 return
 
     elif building == UnitTypeId.PYLON:
-        if bot.can_afford(UnitTypeId.PYLON) and bot.townhalls:
+        if bot.can_afford(UnitTypeId.PYLON) and starting_nexus:
             if bot.structures(UnitTypeId.PYLON).amount == 0:
-                townhall_pos = bot.townhalls.first.position
+                townhall_pos = starting_nexus.position
                 map_center = bot.game_info.map_center
                 direction = (map_center - townhall_pos).normalized
                 target_pos = townhall_pos + direction * 5
@@ -61,7 +64,7 @@ async def build_structure(bot: BotAI, building: UnitTypeId):
             else:
                 placement = await bot.find_placement(
                     UnitTypeId.PYLON,
-                    near=bot.townhalls.first.position,
+                    near=starting_nexus.position,
                     placement_step=8)
             if placement:
                 await bot.build(UnitTypeId.PYLON, placement)
@@ -75,10 +78,10 @@ async def build_structure(bot: BotAI, building: UnitTypeId):
                 return
 
     else:
-        if bot.can_afford(building) and bot.structures(UnitTypeId.PYLON).ready:
+        if bot.can_afford(building) and bot.structures(UnitTypeId.PYLON).ready and starting_nexus:
             placement = await bot.find_placement(
                 building,
-                near=bot.townhalls.first.position,
+                near=starting_nexus.position,
                 placement_step=1)
             if placement:
                 worker = bot.select_build_worker(placement)

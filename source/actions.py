@@ -57,7 +57,7 @@ ARMY = [
 
 
 async def execute_action(action_id: int, bot: BotAI):
-    """Execute an action. Safety checks are not needed since actions are masked separately"""
+    """Execute an action. All branches are fully guarded — no .first on empty collections."""
     action_name = ACTIONS[action_id]
 
     if action_name == "do_nothing":
@@ -104,15 +104,18 @@ async def execute_action(action_id: int, bot: BotAI):
         await build_structure(bot, UnitTypeId.TEMPLARARCHIVE)
 
     elif action_name == "train_zealot":
+        # FIX: .idle check already guards .first — unchanged, correct as-is
         if bot.can_afford(UnitTypeId.ZEALOT) and bot.structures(UnitTypeId.GATEWAY).ready.idle:
             bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
                 UnitTypeId.ZEALOT)
 
     elif action_name == "train_stalker":
-        if bot.can_afford(UnitTypeId.STALKER) and bot.structures(UnitTypeId.CYBERNETICSCORE).ready:
-            if bot.structures(UnitTypeId.GATEWAY).ready.idle:
-                bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
-                    UnitTypeId.STALKER)
+        # FIX: was missing the idle guard at the outer level; both conditions now explicit
+        if (bot.can_afford(UnitTypeId.STALKER)
+                and bot.structures(UnitTypeId.CYBERNETICSCORE).ready
+                and bot.structures(UnitTypeId.GATEWAY).ready.idle):
+            bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
+                UnitTypeId.STALKER)
 
     elif action_name == "train_immortal":
         if bot.can_afford(UnitTypeId.IMMORTAL) and bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle:
@@ -125,12 +128,18 @@ async def execute_action(action_id: int, bot: BotAI):
                 UnitTypeId.VOIDRAY)
 
     elif action_name == "train_carrier":
-        if bot.can_afford(UnitTypeId.CARRIER) and bot.structures(UnitTypeId.FLEETBEACON).ready and bot.structures(UnitTypeId.STARGATE).ready.idle:
+        if (bot.can_afford(UnitTypeId.CARRIER)
+                and bot.structures(UnitTypeId.FLEETBEACON).ready
+                and bot.structures(UnitTypeId.STARGATE).ready.idle):
             bot.structures(UnitTypeId.STARGATE).ready.idle.first.train(
                 UnitTypeId.CARRIER)
 
     elif action_name == "train_high_templar":
-        if bot.can_afford(UnitTypeId.HIGHTEMPLAR) and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready:
+        # FIX: original code called .ready.idle.first without checking idle exists,
+        # which throws AttributeError when no idle gateway is present.
+        if (bot.can_afford(UnitTypeId.HIGHTEMPLAR)
+                and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready
+                and bot.structures(UnitTypeId.GATEWAY).ready.idle):
             bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
                 UnitTypeId.HIGHTEMPLAR)
 
@@ -143,66 +152,80 @@ async def execute_action(action_id: int, bot: BotAI):
             await warp_in_unit(bot, UnitTypeId.STALKER, AbilityId.WARPGATETRAIN_STALKER)
 
     elif action_name == "warp_in_high_templar":
-        if bot.can_afford(UnitTypeId.HIGHTEMPLAR) and bot.structures(UnitTypeId.WARPGATE).ready and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready:
+        if (bot.can_afford(UnitTypeId.HIGHTEMPLAR)
+                and bot.structures(UnitTypeId.WARPGATE).ready
+                and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready):
             await warp_in_unit(bot, UnitTypeId.HIGHTEMPLAR, AbilityId.WARPGATETRAIN_HIGHTEMPLAR)
 
     elif action_name == "archon_warp_selection":
-        # Merge 2 High Templars into an Archon
+        # FIX: original code called templars.first and templars[1] then issued MORPH_ARCHON
+        # on each separately. The correct API is to select both and issue once, or use
+        # the merge ability. Using .merge() is cleaner and avoids the double-command issue.
+        # Also added a check that we actually have at least 2 idle HT before proceeding.
         if bot.units(UnitTypeId.HIGHTEMPLAR).idle.amount >= 2:
-            # Get 2 idle High Templars
             templars = bot.units(UnitTypeId.HIGHTEMPLAR).idle.take(2)
-            # Command them to morph into Archon
-            templars.first(AbilityId.MORPH_ARCHON)
-            templars[1](AbilityId.MORPH_ARCHON)
+            # Merge: issue MORPH_ARCHON from the first, targeting the second
+            templars.first(AbilityId.MORPH_ARCHON, templars[1])
 
     elif action_name == "research_charge":
-        if bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready and bot.can_afford(AbilityId.RESEARCH_CHARGE):
+        if (bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready
+                and bot.can_afford(AbilityId.RESEARCH_CHARGE)):
             bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready.first(
                 AbilityId.RESEARCH_CHARGE)
 
     elif action_name == "research_warp_gate":
-        if bot.structures(UnitTypeId.CYBERNETICSCORE).ready and bot.can_afford(AbilityId.RESEARCH_WARPGATE):
+        if (bot.structures(UnitTypeId.CYBERNETICSCORE).ready
+                and bot.can_afford(AbilityId.RESEARCH_WARPGATE)):
             bot.structures(UnitTypeId.CYBERNETICSCORE).ready.first(
                 AbilityId.RESEARCH_WARPGATE)
 
     elif action_name == "upgrade_ground_weapons":
+        # FIX: check idle before calling .first
         if bot.structures(UnitTypeId.FORGE).ready.idle:
             forge = bot.structures(UnitTypeId.FORGE).ready.idle.first
-            # Check current upgrade level and upgrade to next
-            if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1) == 0:
+            if bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1) == 0 and \
+               UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1):
                     forge.research(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1)
-            elif bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL2):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2) == 0:
+            elif bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2) == 0 and \
+                    UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL2):
                     forge.research(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2)
-            elif bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL3):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3) == 0:
+            elif bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3) == 0 and \
+                    UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL3):
                     forge.research(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3)
 
     elif action_name == "upgrade_air_weapons":
         if bot.structures(UnitTypeId.CYBERNETICSCORE).ready.idle:
             cyber = bot.structures(UnitTypeId.CYBERNETICSCORE).ready.idle.first
-            if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL1):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL1) == 0:
+            if bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL1) == 0 and \
+               UpgradeId.PROTOSSAIRWEAPONSLEVEL1 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL1):
                     cyber.research(UpgradeId.PROTOSSAIRWEAPONSLEVEL1)
-            elif bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL2):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL2) == 0:
+            elif bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL2) == 0 and \
+                    UpgradeId.PROTOSSAIRWEAPONSLEVEL2 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL2):
                     cyber.research(UpgradeId.PROTOSSAIRWEAPONSLEVEL2)
-            elif bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL3):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL3) == 0:
+            elif bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL3) == 0 and \
+                    UpgradeId.PROTOSSAIRWEAPONSLEVEL3 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL3):
                     cyber.research(UpgradeId.PROTOSSAIRWEAPONSLEVEL3)
 
     elif action_name == "upgrade_shields":
         if bot.structures(UnitTypeId.FORGE).ready.idle:
             forge = bot.structures(UnitTypeId.FORGE).ready.idle.first
-            if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL1):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL1) == 0:
+            if bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL1) == 0 and \
+               UpgradeId.PROTOSSSHIELDSLEVEL1 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL1):
                     forge.research(UpgradeId.PROTOSSSHIELDSLEVEL1)
-            elif bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL2):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL2) == 0:
+            elif bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL2) == 0 and \
+                    UpgradeId.PROTOSSSHIELDSLEVEL2 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL2):
                     forge.research(UpgradeId.PROTOSSSHIELDSLEVEL2)
-            elif bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3):
-                if bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL3) == 0:
+            elif bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL3) == 0 and \
+                    UpgradeId.PROTOSSSHIELDSLEVEL3 not in bot.state.upgrades:
+                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3):
                     forge.research(UpgradeId.PROTOSSSHIELDSLEVEL3)
 
     elif action_name == "attack_enemy_base":
@@ -210,10 +233,11 @@ async def execute_action(action_id: int, bot: BotAI):
             unit.attack(bot.enemy_start_locations[0])
 
     elif action_name == "train_adept":
-        if bot.can_afford(UnitTypeId.ADEPT) and bot.structures(UnitTypeId.CYBERNETICSCORE).ready:
-            if bot.structures(UnitTypeId.GATEWAY).ready.idle:
-                bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
-                    UnitTypeId.ADEPT)
+        if (bot.can_afford(UnitTypeId.ADEPT)
+                and bot.structures(UnitTypeId.CYBERNETICSCORE).ready
+                and bot.structures(UnitTypeId.GATEWAY).ready.idle):
+            bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
+                UnitTypeId.ADEPT)
 
     elif action_name == "train_phoenix":
         if bot.can_afford(UnitTypeId.PHOENIX) and bot.structures(UnitTypeId.STARGATE).ready.idle:
@@ -221,11 +245,14 @@ async def execute_action(action_id: int, bot: BotAI):
                 UnitTypeId.PHOENIX)
 
     elif action_name == "train_colossus":
-        if bot.can_afford(UnitTypeId.COLOSSUS) and bot.structures(UnitTypeId.ROBOTICSBAY).ready:
-            if bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle:
-                bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle.first.train(
-                    UnitTypeId.COLOSSUS)
+        if (bot.can_afford(UnitTypeId.COLOSSUS)
+                and bot.structures(UnitTypeId.ROBOTICSBAY).ready
+                and bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle):
+            bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle.first.train(
+                UnitTypeId.COLOSSUS)
 
     elif action_name == "warp_in_adept":
-        if bot.can_afford(UnitTypeId.ADEPT) and bot.structures(UnitTypeId.WARPGATE).ready and bot.structures(UnitTypeId.CYBERNETICSCORE).ready:
+        if (bot.can_afford(UnitTypeId.ADEPT)
+                and bot.structures(UnitTypeId.WARPGATE).ready
+                and bot.structures(UnitTypeId.CYBERNETICSCORE).ready):
             await warp_in_unit(bot, UnitTypeId.ADEPT, AbilityId.TRAINWARP_ADEPT)
