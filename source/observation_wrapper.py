@@ -39,7 +39,7 @@ PROTOSS_UNITS = [
 
 class ObservationWrapper:
     """
-    Converts game state into a flat vector for neural network input.
+    Converts game state into a flat, normalized vector for neural network input. Runs at every game step.
 
     Feature layout (71 total):
         [0]     game time (normalized)
@@ -64,7 +64,7 @@ class ObservationWrapper:
     def __init__(self):
         self.observation_size = self.calculate_obs_size()
 
-    def calculate_obs_size(self):
+    def calculate_obs_size(self) -> int:
         # 12 base + 15 structs + 8 units + 15 structs_pending + 8 units_pending
         # + 4 idle production buildings + 3 upgrade levels
         return (12
@@ -75,23 +75,30 @@ class ObservationWrapper:
                 + 4
                 + 3)
 
-    def get_observation(self, bot: BotAI):
+    def get_observation(self, bot: BotAI) -> list[float]:
         obs = []
 
-        # Base features
         obs.append(bot.time / 720.0)
 
         # Minerals one-hot (4 bins)
-        if bot.minerals < 100: obs.extend([1.0, 0.0, 0.0, 0.0])
-        elif bot.minerals < 300: obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif bot.minerals < 500: obs.extend([0.0, 0.0, 1.0, 0.0])
-        else: obs.extend([0.0, 0.0, 0.0, 1.0])
+        if bot.minerals < 100:
+            obs.extend([1.0, 0.0, 0.0, 0.0])
+        elif bot.minerals < 300:
+            obs.extend([0.0, 1.0, 0.0, 0.0])
+        elif bot.minerals < 700:
+            obs.extend([0.0, 0.0, 1.0, 0.0])
+        else:
+            obs.extend([0.0, 0.0, 0.0, 1.0])
 
         # Gas one-hot (4 bins)
-        if bot.vespene < 25: obs.extend([1.0, 0.0, 0.0, 0.0])
-        elif bot.vespene < 100: obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif bot.vespene < 200: obs.extend([0.0, 0.0, 1.0, 0.0])
-        else: obs.extend([0.0, 0.0, 0.0, 1.0])
+        if bot.vespene < 25:
+            obs.extend([1.0, 0.0, 0.0, 0.0])
+        elif bot.vespene < 100:
+            obs.extend([0.0, 1.0, 0.0, 0.0])
+        elif bot.vespene < 300:
+            obs.extend([0.0, 0.0, 1.0, 0.0])
+        else:
+            obs.extend([0.0, 0.0, 0.0, 1.0])
 
         obs.append(bot.supply_used / 200.0)
         obs.append(bot.supply_cap / 200.0)

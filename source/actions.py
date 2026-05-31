@@ -57,7 +57,7 @@ ARMY = [
 
 
 async def execute_action(action_id: int, bot: BotAI):
-    """Execute an action with minimal safety checks for faster training"""
+    """Execute an action. Safety checks are not needed since actions are masked separately"""
     action_name = ACTIONS[action_id]
 
     if action_name == "do_nothing":

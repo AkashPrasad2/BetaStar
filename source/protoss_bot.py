@@ -20,11 +20,11 @@ class ProtossBot(BotAI):
         super().__init__()
         self.obs_wrapper = ObservationWrapper()
         self.model = load_model(CHECKPOINT_PATH, device=DEVICE)
-        self.action_cooldown = 0
+        self.action_cooldown = 0  # start at 0 so we act at step 0
         self.obs_history = []   # rolling window of observation vectors
 
     async def on_step(self, iteration: int):
-        # --- Always-on behaviours ---
+        # Always-on behaviours
         await self.distribute_workers()
         await auto_saturate_assimilators(self)
         await set_production_rally_points(self)
@@ -53,8 +53,7 @@ class ProtossBot(BotAI):
         print(
             f"[{self.time:.0f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
 
-        # Illegal or unaffordable actions fail silently inside execute_action —
-        # the bot simply waits until the next cooldown tick and tries again.
+        # illegal actions will faily silently (just continue to next step)
         await actions.execute_action(action_id, self)
         self.action_cooldown = 22
 
