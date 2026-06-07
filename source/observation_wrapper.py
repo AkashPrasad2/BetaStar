@@ -7,7 +7,6 @@ PROTOSS_STRUCTURES = [
     UnitTypeId.NEXUS,
     UnitTypeId.PYLON,
     UnitTypeId.GATEWAY,
-    UnitTypeId.WARPGATE,
     UnitTypeId.FORGE,
     UnitTypeId.TWILIGHTCOUNCIL,
     UnitTypeId.PHOTONCANNON,
@@ -19,6 +18,7 @@ PROTOSS_STRUCTURES = [
     UnitTypeId.CYBERNETICSCORE,
     UnitTypeId.STARGATE,
     UnitTypeId.FLEETBEACON,
+    UnitTypeId.WARPGATE
 ]
 
 # 11 units
@@ -41,7 +41,7 @@ class ObservationWrapper:
     """
     Converts game state into a flat, normalized vector for neural network input. Runs at every game step.
 
-    Feature layout (71 total):
+    Feature layout (70 total):
         [0]     game time (normalized)
         [1:5]   minerals one-hot (4 bins)
         [5:9]   vespene one-hot (4 bins)
@@ -50,27 +50,27 @@ class ObservationWrapper:
         [11]    worker saturation
         [12:27] completed structure counts   (15)
         [27:38] completed unit counts        (11)
-        [38:53] in-progress structure counts (15)
-        [53:64] in-progress unit counts      (11)
-        [64]    idle gateway+warpgate count  (normalised /5)
-        [65]    idle stargate count          (normalised /5)
-        [66]    idle robotics facility count (normalised /5)
-        [67]    idle warpgate count          (normalised /5)
-        [68]    ground weapons level         (normalised /3)
-        [69]    shields level                (normalised /3)
-        [70]    air weapons level            (normalised /3)
+        [38:52] in-progress structure counts (14, excl WARPGATE)
+        [52:63] in-progress unit counts      (11)
+        [63]    idle gateway+warpgate count  (normalised /5)
+        [64]    idle stargate count          (normalised /5)
+        [65]    idle robotics facility count (normalised /5)
+        [66]    idle warpgate count          (normalised /5)
+        [67]    ground weapons level         (normalised /3)
+        [68]    shields level                (normalised /3)
+        [69]    air weapons level            (normalised /3)
     """
 
     def __init__(self):
         self.observation_size = self.calculate_obs_size()
 
     def calculate_obs_size(self) -> int:
-        # 12 base + 15 structs + 8 units + 15 structs_pending + 8 units_pending
+        # 12 base + 15 structs + 11 units + 14 structs_pending (excl WARPGATE) + 11 units_pending
         # + 4 idle production buildings + 3 upgrade levels
         return (12
                 + len(PROTOSS_STRUCTURES)
                 + len(PROTOSS_UNITS)
-                + len(PROTOSS_STRUCTURES)
+                + (len(PROTOSS_STRUCTURES) - 1)  # exclude WARPGATE from pending
                 + len(PROTOSS_UNITS)
                 + 4
                 + 3)
@@ -85,7 +85,7 @@ class ObservationWrapper:
             obs.extend([1.0, 0.0, 0.0, 0.0])
         elif bot.minerals < 300:
             obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif bot.minerals < 700:
+        elif bot.minerals < 500:
             obs.extend([0.0, 0.0, 1.0, 0.0])
         else:
             obs.extend([0.0, 0.0, 0.0, 1.0])
@@ -95,7 +95,7 @@ class ObservationWrapper:
             obs.extend([1.0, 0.0, 0.0, 0.0])
         elif bot.vespene < 100:
             obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif bot.vespene < 300:
+        elif bot.vespene < 200:
             obs.extend([0.0, 0.0, 1.0, 0.0])
         else:
             obs.extend([0.0, 0.0, 0.0, 1.0])
@@ -115,15 +115,15 @@ class ObservationWrapper:
         for unit in PROTOSS_UNITS:
             obs.append(bot.units(unit).amount / 30.0)
 
-        # In-progress structures (under construction)
-        for structure in PROTOSS_STRUCTURES:
+        # In-progress structures (under construction). Exclude warpgates since they are never considered in progress
+        for structure in PROTOSS_STRUCTURES[:-1]:
             obs.append(bot.structures(structure).not_ready.amount / 10.0)
 
         # In-progress units (queued in production buildings)
         for unit in PROTOSS_UNITS:
             obs.append(bot.already_pending(unit) / 30.0)
 
-        # Idle production buildings (indices 58-61)
+        # Idle production buildings (indices 57-60)
         # Gateway + Warpgate combined pool: idle if building count exceeds
         # the number of gateway-type units currently in production.
         gw_count = bot.structures(UnitTypeId.GATEWAY).ready.amount
@@ -152,10 +152,10 @@ class ObservationWrapper:
         # not currently warping anything.
         idle_wg = max(0, wg_count - max(0, gw_wg_busy - gw_count))
 
-        obs.append(idle_gw_wg / 5.0)   # index 64
-        obs.append(idle_sg / 5.0)   # index 65
-        obs.append(idle_robo / 5.0)   # index 66
-        obs.append(idle_wg / 5.0)   # index 67
+        obs.append(idle_gw_wg / 5.0)   # index 63
+        obs.append(idle_sg / 5.0)   # index 64
+        obs.append(idle_robo / 5.0)   # index 65
+        obs.append(idle_wg / 5.0)   # index 66
 
         # Upgrade levels: committed = completed OR currently being researched.
         # Matches the pending-or-complete convention used in the replay parser.
@@ -185,8 +185,8 @@ class ObservationWrapper:
             UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
         ])
 
-        obs.append(gw_lvl / 3.0)   # index 68
-        obs.append(sh_lvl / 3.0)   # index 69
-        obs.append(aw_lvl / 3.0)   # index 70
+        obs.append(gw_lvl / 3.0)   # index 67
+        obs.append(sh_lvl / 3.0)   # index 68
+        obs.append(aw_lvl / 3.0)   # index 69
 
         return obs

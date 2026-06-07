@@ -30,7 +30,7 @@ if PROJECT_ROOT not in sys.path:
 
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
-OBS_SIZE = 71
+OBS_SIZE = 70
 NUM_ACTIONS = 35
 
 ACTIONS = [

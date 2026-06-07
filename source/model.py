@@ -27,7 +27,7 @@ from action_mask import apply_legal_mask, apply_training_mask
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
 
-OBS_SIZE = 71   # 1 time + 4 min + 4 gas + 3 base + 15 structures + 11 units + 15 pending structs + 11 pending units + 4 idle + 3 upgrade levels
+OBS_SIZE = 70   # 1 time + 4 min + 4 gas + 3 base + 15 structures + 11 units + 14 pending structs + 11 pending units + 4 idle + 3 upgrade levels
 NUM_ACTIONS = 35   # action 0 = do_nothing, kept for index stability
 
 # Transformer hyper-params

@@ -28,12 +28,12 @@ from pathlib import Path
 
 # ---- add project root to path so we can import action_mask ----
 # Adjust this if your project is elsewhere
-PROJECT_ROOT = r"C:\dev\BetaStar"
+PROJECT_ROOT = r"C:\dev\BetaStar\source"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-OBS_SIZE = 71
+OBS_SIZE = 70
 NUM_ACTIONS = 35
 
 ACTIONS = [
@@ -51,26 +51,27 @@ ACTIONS = [
     "build_photon_cannon",   # 11
     "build_fleet_beacon",    # 12
     "build_templar_archive",  # 13
-    "train_zealot",          # 14
-    "train_stalker",         # 15
-    "train_immortal",        # 16
-    "train_voidray",         # 17
-    "train_carrier",         # 18
-    "train_high_templar",    # 19
-    "warp_in_zealot",        # 20
-    "warp_in_stalker",       # 21
-    "warp_in_high_templar",  # 22
-    "archon_warp_selection",  # 23
-    "research_charge",       # 24
-    "research_warp_gate",    # 25
-    "upgrade_ground_weapons",  # 26
-    "upgrade_air_weapons",   # 27
-    "upgrade_shields",       # 28
-    "attack_enemy_base",     # 29
-    "train_adept",           # 30
-    "train_phoenix",         # 31
-    "train_colossus",        # 32
-    "warp_in_adept",         # 33
+    "build_robotics_bay",    # 14
+    "build_shield_battery",  # 15
+    "train_zealot",          # 16
+    "train_stalker",         # 17
+    "train_immortal",        # 18
+    "train_voidray",         # 19
+    "train_carrier",         # 20
+    "train_high_templar",    # 21
+    "warp_in_zealot",        # 22
+    "warp_in_stalker",       # 23
+    "warp_in_high_templar",  # 24
+    "research_charge",       # 25
+    "research_warp_gate",    # 26
+    "upgrade_ground_weapons",  # 27
+    "upgrade_air_weapons",   # 28
+    "upgrade_shields",       # 29
+    "attack_enemy_base",     # 30
+    "train_adept",           # 31
+    "train_phoenix",         # 32
+    "train_colossus",        # 33
+    "warp_in_adept",         # 34
 ]
 
 

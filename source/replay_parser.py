@@ -67,16 +67,16 @@ UNIT_NAME_MAP = {
 }
 
 STRUCTURES = [
-    "NEXUS", "PYLON", "GATEWAY", "WARPGATE", "FORGE", "TWILIGHTCOUNCIL",
-    "PHOTONCANNON", "SHIELDBATTERY", "TEMPLARARCHIVE", "ROBOTICSBAY",
-    "ROBOTICSFACILITY", "ASSIMILATOR", "CYBERNETICSCORE", "STARGATE", "FLEETBEACON",
+    "NEXUS", "PYLON", "GATEWAY", "FORGE", "TWILIGHTCOUNCIL", "PHOTONCANNON",
+    "SHIELDBATTERY", "TEMPLARARCHIVE", "ROBOTICSBAY", "ROBOTICSFACILITY",
+    "ASSIMILATOR", "CYBERNETICSCORE", "STARGATE", "FLEETBEACON", "WARPGATE"
 ]
 UNITS = [
     "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON", "IMMORTAL", "CARRIER", "VOIDRAY",
     "ADEPT", "PHOENIX", "COLOSSUS",
 ]
 
-OBS_SIZE = 71
+OBS_SIZE = 70
 
 BUILD_COMMAND_TO_STRUCTURE = {
     "BuildNexus":             "NEXUS",
@@ -133,23 +133,23 @@ UPGRADE_COMMAND_TO_LEVEL = {
 _IDX_NEXUS = 12
 _IDX_PYLON = 13
 _IDX_GATEWAY = 14
-_IDX_WARPGATE = 15
-_IDX_FORGE = 16
-_IDX_TWILIGHTCOUNCIL = 17
-_IDX_PHOTONCANNON = 18
-_IDX_SHIELDBATTERY = 19   # present in obs, not used by mask but listed for clarity
-_IDX_TEMPLARARCHIVE = 20
-_IDX_ROBOTICSBAY = 21
-_IDX_ROBOTICSFACILITY = 22
-_IDX_ASSIMILATOR = 23
-_IDX_CYBERNETICSCORE = 24
-_IDX_STARGATE = 25
-_IDX_FLEETBEACON = 26
+_IDX_FORGE = 15
+_IDX_TWILIGHTCOUNCIL = 16
+_IDX_PHOTONCANNON = 17
+_IDX_SHIELDBATTERY = 18   # present in obs, not used by mask but listed for clarity
+_IDX_TEMPLARARCHIVE = 19
+_IDX_ROBOTICSBAY = 20
+_IDX_ROBOTICSFACILITY = 21
+_IDX_ASSIMILATOR = 22
+_IDX_CYBERNETICSCORE = 23
+_IDX_STARGATE = 24
+_IDX_FLEETBEACON = 25
+_IDX_WARPGATE = 26
 
 # Completed units (indices 27-37)
 _IDX_HIGHTEMPLAR = 30
 
-_EPS = 0.01
+_EPS = 0.01  # epsilon for comparisons etc.
 
 
 def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
@@ -168,7 +168,7 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
        means we still capture these important events like gw and cybercores, and if the player is able to build it, 
        then it would be legal for our model to build it at that time (the game state is just stale)
 
-    3. 1-of building caps are applied (same as inference mask): cybercore,
+    3. 1-of building caps are applied (same as inference mask):
        twilight council, fleet beacon, templar archive. Pros never build
        duplicates — any such label in a replay is noise.
 
@@ -226,10 +226,12 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
     poc_temparch = has_temparch or pend_temparch
 
     # Building caps
-    under_cybcore_cap = obs[_IDX_CYBERNETICSCORE] < (1.5 / 10.0) # don't want more than 2 cybercores
-    no_twilight = not has_twilight # only 1 twilight council
-    no_fleet = not has_fleet # only 1 fleet beacon
-    no_temparch = not has_temparch # only 1 templar archive
+    under_cybcore_cap = obs[_IDX_CYBERNETICSCORE] < (
+        1.5 / 10.0)  # don't want more than 2 cybercores
+    no_twilight = not has_twilight
+    no_fleet = not has_fleet
+    no_temparch = not has_temparch
+    no_robobay = not has_robobay
 
     # rules for each action id
     # action_id : prerequisite
@@ -273,65 +275,68 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
         # build_templar_archive: twilight pending-or-complete, no existing templar archive
         13: (poc_twilight and no_temparch, "needs poc_twilight and no_temparch"),
 
+        # build_robotics_bay: requires robotics facility
+        14: (poc_robo and no_robobay, "needs poc_robo and no_robobay"),
+
+        # build shield_battery
+        15: (poc_cybcore, "needs poc_cybcore"),
+
         # train_zealot: gateway pending-or-complete (don't require idle count — drifts)
-        14: (poc_gateway, "needs poc_gateway"),
+        16: (poc_gateway, "needs poc_gateway"),
 
         # train_stalker: gateway + cybcore both pending-or-complete
-        15: (poc_gateway and poc_cybcore, "needs poc_gateway and poc_cybcore"),
+        17: (poc_gateway and poc_cybcore, "needs poc_gateway and poc_cybcore"),
 
         # train_immortal: robo pending-or-complete
-        16: (poc_robo, "needs poc_robo"),
+        18: (poc_robo, "needs poc_robo"),
 
         # train_voidray: stargate pending-or-complete
-        17: (poc_stargate, "needs poc_stargate"),
+        19: (poc_stargate, "needs poc_stargate"),
 
         # train_carrier: stargate pending-or-complete + fleet beacon complete
-        18: (poc_stargate and has_fleet, "needs poc_stargate and has_fleet"),
+        20: (poc_stargate and has_fleet, "needs poc_stargate and has_fleet"),
 
         # train_high_templar: gateway pending-or-complete + templar archive pending-or-complete
-        19: (poc_gateway and poc_temparch, "needs poc_gateway and poc_temparch"),
+        21: (poc_gateway and poc_temparch, "needs poc_gateway and poc_temparch"),
 
         # warp_in_zealot: warpgate pending-or-complete
-        20: (poc_warpgate, "needs poc_warpgate"),
+        22: (poc_warpgate, "needs poc_warpgate"),
 
         # warp_in_stalker: warpgate + cybcore both pending-or-complete
-        21: (poc_warpgate and poc_cybcore, "needs poc_warpgate and poc_cybcore"),
+        23: (poc_warpgate and poc_cybcore, "needs poc_warpgate and poc_cybcore"),
 
         # warp_in_high_templar: warpgate + templar archive both pending-or-complete
-        22: (poc_warpgate and poc_temparch, "needs poc_warpgate and poc_temparch"),
-
-        # archon_warp: needs 2 completed high templars
-        23: (has_2ht, "needs 2 completed high templars"),
+        24: (poc_warpgate and poc_temparch, "needs poc_warpgate and poc_temparch"),
 
         # research_charge: twilight pending-or-complete
-        24: (poc_twilight, "needs poc_twilight"),
+        25: (poc_twilight, "needs poc_twilight"),
 
         # research_warp_gate: cybcore pending-or-complete
-        25: (poc_cybcore, "needs poc_cybcore"),
+        26: (poc_cybcore, "needs poc_cybcore"),
 
         # upgrade_ground_weapons: needs completed forge
-        26: (has_forge, "needs forge"),
+        27: (has_forge, "needs forge"),
 
         # upgrade_air_weapons: cybcore pending-or-complete
-        27: (poc_cybcore, "needs poc_cybcore"),
+        28: (poc_cybcore, "needs poc_cybcore"),
 
         # upgrade_shields: needs completed forge
-        28: (has_forge, "needs forge"),
+        29: (has_forge, "needs forge"),
 
         # attack_enemy_base: needs army
-        29: (has_army, "needs army"),
+        30: (has_army, "needs army"),
 
         # train_adept: gateway + cybcore pending-or-complete
-        30: (poc_gateway and poc_cybcore, "needs poc_gateway and poc_cybcore"),
+        31: (poc_gateway and poc_cybcore, "needs poc_gateway and poc_cybcore"),
 
         # train_phoenix: stargate pending-or-complete
-        31: (poc_stargate, "needs poc_stargate"),
+        32: (poc_stargate, "needs poc_stargate"),
 
         # train_colossus: robo pending-or-complete + robobay complete
-        32: (poc_robo and has_robobay, "needs poc_robo and has_robobay"),
+        33: (poc_robo and has_robobay, "needs poc_robo and has_robobay"),
 
         # warp_in_adept: warpgate + cybcore pending-or-complete
-        33: (poc_warpgate and poc_cybcore, "needs poc_warpgate and poc_cybcore"),
+        34: (poc_warpgate and poc_cybcore, "needs poc_warpgate and poc_cybcore"),
     }
     return rules.get(action_id, (False, "unknown action"))
 
@@ -359,7 +364,8 @@ class GameState:
 
         # Upgrade levels: highest level whose research has been commanded.
         # Pending-or-complete convention (set when research command fires).
-        self.upgrade_lvls = {"GROUND_WEAPONS": 0, "SHIELDS": 0, "AIR_WEAPONS": 0}
+        self.upgrade_lvls = {"GROUND_WEAPONS": 0,
+                             "SHIELDS": 0, "AIR_WEAPONS": 0}
 
     def update_from_stats(self, event: PlayerStatsEvent):
         # get snapshot of minerals, etc.. Fires every ~8 seconds
@@ -422,18 +428,26 @@ class GameState:
         obs = [
             t / 720.0,
         ]
-        
+
         # Minerals one-hot (4 bins)
-        if self.minerals < 100: obs.extend([1.0, 0.0, 0.0, 0.0])
-        elif self.minerals < 300: obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif self.minerals < 500: obs.extend([0.0, 0.0, 1.0, 0.0])
-        else: obs.extend([0.0, 0.0, 0.0, 1.0])
+        if self.minerals < 100:
+            obs.extend([1.0, 0.0, 0.0, 0.0])
+        elif self.minerals < 300:
+            obs.extend([0.0, 1.0, 0.0, 0.0])
+        elif self.minerals < 500:
+            obs.extend([0.0, 0.0, 1.0, 0.0])
+        else:
+            obs.extend([0.0, 0.0, 0.0, 1.0])
 
         # Gas one-hot (4 bins)
-        if self.vespene < 25: obs.extend([1.0, 0.0, 0.0, 0.0])
-        elif self.vespene < 100: obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif self.vespene < 200: obs.extend([0.0, 0.0, 1.0, 0.0])
-        else: obs.extend([0.0, 0.0, 0.0, 1.0])
+        if self.vespene < 25:
+            obs.extend([1.0, 0.0, 0.0, 0.0])
+        elif self.vespene < 100:
+            obs.extend([0.0, 1.0, 0.0, 0.0])
+        elif self.vespene < 200:
+            obs.extend([0.0, 0.0, 1.0, 0.0])
+        else:
+            obs.extend([0.0, 0.0, 0.0, 1.0])
 
         obs.extend([
             self.supply_used / 200.0,
@@ -444,7 +458,7 @@ class GameState:
             obs.append(self.counts[s] / 10.0)
         for u in UNITS:
             obs.append(self.counts[u] / 30.0)
-        for s in STRUCTURES:
+        for s in STRUCTURES[:-1]:  # Exclude WARPGATE from pending structures
             obs.append(self.pending_structures[s] / 10.0)
         for u in UNITS:
             obs.append(self.pending_units[u] / 30.0)
@@ -518,42 +532,42 @@ class ReplayParser:
             "BuildPhotonCannon":     11,
             "BuildFleetBeacon":      12,
             "BuildTemplarArchive":   13,
-            "TrainZealot":           14,
-            "TrainStalker":          15,
-            "TrainImmortal":         16,
-            "TrainVoidRay":          17,
-            "TrainCarrier":          18,
-            "TrainHighTemplar":      19,
-            "WarpInZealot":          20,
-            "WarpInStalker":         21,
-            "WarpInHighTemplar":     22,
-            "ArchonWarp":            23,
-            "ArchonWarpSelection":   23,
-            "MorphToArchon":         23,
-            "ResearchCharge":        24,
-            "ResearchWarpGate":      25,
+            "BuildRoboticsBay":      14,
+            "BuildShieldBattery":    15,
+            "TrainZealot":           16,
+            "TrainStalker":          17,
+            "TrainImmortal":         18,
+            "TrainVoidRay":          19,
+            "TrainCarrier":          20,
+            "TrainHighTemplar":      21,
+            "WarpInZealot":          22,
+            "WarpInStalker":         23,
+            "WarpInHighTemplar":     24,
+            "ResearchCharge":        25,
+            "ResearchWarpGate":      26,
             # Upgrade research — each level maps to the same generic action
-            "UpgradeGroundWeapons1": 26,
-            "UpgradeGroundWeapons2": 26,
-            "UpgradeGroundWeapons3": 26,
-            "UpgradeAirWeapons1":    27,
-            "UpgradeAirWeapons2":    27,
-            "UpgradeAirWeapons3":    27,
-            "UpgradeShields1":       28,
-            "UpgradeShields2":       28,
-            "UpgradesShields3":      28,  # sc2reader typo variant
-            "UpgradeShields3":       28,
-            "TrainAdept":            30,
-            "TrainPhoenix":          31,
-            "TrainColossus":         32,
-            "WarpInAdept":           33,
+            "UpgradeGroundWeapons1": 27,
+            "UpgradeGroundWeapons2": 27,
+            "UpgradeGroundWeapons3": 27,
+            "UpgradeAirWeapons1":    28,
+            "UpgradeAirWeapons2":    28,
+            "UpgradeAirWeapons3":    28,
+            "UpgradeShields1":       29,
+            "UpgradeShields2":       29,
+            "UpgradesShields3":      29,  # sc2reader typo variant
+            "UpgradeShields3":       29,
+            "TrainAdept":            31,
+            "TrainPhoenix":          32,
+            "TrainColossus":         33,
+            "WarpInAdept":           34,
         }
 
     def parse_replay(self, replay, min_length: int = 10) -> np.ndarray | None:
         # Skip replays that are incompatible with the sc2reader
         if getattr(replay, 'build', 0) < 73286:
             if self.debug:
-                print(f"    [SKIP] Replay build {getattr(replay, 'build', 'unknown')} is older than 4.0.0 (73286).")
+                print(
+                    f"    [SKIP] Replay build {getattr(replay, 'build', 'unknown')} is older than 4.0.0 (73286).")
             return None
 
         protoss_player = None
@@ -669,15 +683,19 @@ class ReplayParser:
                             h = obs[12 + i] * 10
                             p = obs[38 + i] * 10
                             if h > 0 or p > 0:
-                                state_strs.append(f"{name}(h={h:.0f},p={p:.0f})")
+                                state_strs.append(
+                                    f"{name}(h={h:.0f},p={p:.0f})")
                         for i, name in enumerate(UNITS):
                             h = obs[27 + i] * 30
                             p = obs[53 + i] * 30
                             if h > 0 or p > 0:
-                                state_strs.append(f"{name}(h={h:.0f},p={p:.0f})")
+                                state_strs.append(
+                                    f"{name}(h={h:.0f},p={p:.0f})")
 
-                        state_str = ", ".join(state_strs) if state_strs else "No structures/units"
-                        print(f"    [CONFLICT] window={window} action={action_id} ({action_name}) - Failed: {reason}")
+                        state_str = ", ".join(
+                            state_strs) if state_strs else "No structures/units"
+                        print(
+                            f"    [CONFLICT] window={window} action={action_id} ({action_name}) - Failed: {reason}")
                         print(f"               State: {state_str}")
                     action_id = 0
 

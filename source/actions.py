@@ -20,26 +20,27 @@ ACTIONS = [
     "build_photon_cannon",      # 11
     "build_fleet_beacon",       # 12
     "build_templar_archive",    # 13
-    "train_zealot",             # 14
-    "train_stalker",            # 15
-    "train_immortal",           # 16
-    "train_voidray",            # 17
-    "train_carrier",            # 18
-    "train_high_templar",       # 19
-    "warp_in_zealot",           # 20
-    "warp_in_stalker",          # 21
-    "warp_in_high_templar",     # 22
-    "archon_warp_selection",    # 23
-    "research_charge",          # 24
-    "research_warp_gate",       # 25
-    "upgrade_ground_weapons",   # 26
-    "upgrade_air_weapons",      # 27
-    "upgrade_shields",          # 28
-    "attack_enemy_base",        # 29
-    "train_adept",              # 30
-    "train_phoenix",            # 31
-    "train_colossus",           # 32
-    "warp_in_adept",            # 33
+    "build_robotics_bay",       # 14
+    "build_shield_battery",     # 15
+    "train_zealot",             # 16
+    "train_stalker",            # 17
+    "train_immortal",           # 18
+    "train_voidray",            # 19
+    "train_carrier",            # 20
+    "train_high_templar",       # 21
+    "warp_in_zealot",           # 22
+    "warp_in_stalker",          # 23
+    "warp_in_high_templar",     # 24
+    "research_charge",          # 25
+    "research_warp_gate",       # 26
+    "upgrade_ground_weapons",   # 27
+    "upgrade_air_weapons",      # 28
+    "upgrade_shields",          # 29
+    "attack_enemy_base",        # 30
+    "train_adept",              # 31
+    "train_phoenix",            # 32
+    "train_colossus",           # 33
+    "warp_in_adept",            # 34
 ]
 
 ARMY = [
@@ -103,14 +104,18 @@ async def execute_action(action_id: int, bot: BotAI):
     elif action_name == "build_templar_archive":
         await build_structure(bot, UnitTypeId.TEMPLARARCHIVE)
 
+    elif action_name == "build_robotics_bay":
+        await build_structure(bot, UnitTypeId.ROBOTICSBAY)
+
+    elif action_name == "build_shield_battery":
+        await build_structure(bot, UnitTypeId.SHIELDBATTERY)
+
     elif action_name == "train_zealot":
-        # FIX: .idle check already guards .first — unchanged, correct as-is
         if bot.can_afford(UnitTypeId.ZEALOT) and bot.structures(UnitTypeId.GATEWAY).ready.idle:
             bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
                 UnitTypeId.ZEALOT)
 
     elif action_name == "train_stalker":
-        # FIX: was missing the idle guard at the outer level; both conditions now explicit
         if (bot.can_afford(UnitTypeId.STALKER)
                 and bot.structures(UnitTypeId.CYBERNETICSCORE).ready
                 and bot.structures(UnitTypeId.GATEWAY).ready.idle):
@@ -135,8 +140,6 @@ async def execute_action(action_id: int, bot: BotAI):
                 UnitTypeId.CARRIER)
 
     elif action_name == "train_high_templar":
-        # FIX: original code called .ready.idle.first without checking idle exists,
-        # which throws AttributeError when no idle gateway is present.
         if (bot.can_afford(UnitTypeId.HIGHTEMPLAR)
                 and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready
                 and bot.structures(UnitTypeId.GATEWAY).ready.idle):

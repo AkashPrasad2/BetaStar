@@ -26,22 +26,26 @@ NUM_ACTIONS = 35  # 0-33 active; index 34 is a stale dataset entry, always maske
 
 # ---------------------------------------------------------------------------
 # Obs feature indices — completed structure counts (indices 12-26)
+# Order follows PROTOSS_STRUCTURES in observation_wrapper.py:
+# NEXUS, PYLON, GATEWAY, FORGE, TWILIGHTCOUNCIL, PHOTONCANNON, SHIELDBATTERY,
+# TEMPLARARCHIVE, ROBOTICSBAY, ROBOTICSFACILITY, ASSIMILATOR, CYBERNETICSCORE,
+# STARGATE, FLEETBEACON, WARPGATE
 # ---------------------------------------------------------------------------
 IDX_NEXUS = 12
 IDX_PYLON = 13
 IDX_GATEWAY = 14
-IDX_WARPGATE = 15
-IDX_FORGE = 16
-IDX_TWILIGHTCOUNCIL = 17
-IDX_PHOTONCANNON = 18
-IDX_SHIELDBATTERY = 19
-IDX_TEMPLARARCHIVE = 20
-IDX_ROBOTICSBAY = 21
-IDX_ROBOTICSFACILITY = 22
-IDX_ASSIMILATOR = 23
-IDX_CYBERNETICSCORE = 24
-IDX_STARGATE = 25
-IDX_FLEETBEACON = 26
+IDX_FORGE = 15
+IDX_TWILIGHTCOUNCIL = 16
+IDX_PHOTONCANNON = 17
+IDX_SHIELDBATTERY = 18
+IDX_TEMPLARARCHIVE = 19
+IDX_ROBOTICSBAY = 20
+IDX_ROBOTICSFACILITY = 21
+IDX_ASSIMILATOR = 22
+IDX_CYBERNETICSCORE = 23
+IDX_STARGATE = 24
+IDX_FLEETBEACON = 25
+IDX_WARPGATE = 26
 
 # ---------------------------------------------------------------------------
 # Obs feature indices — completed unit counts (indices 27-37)
@@ -59,44 +63,46 @@ IDX_PHOENIX = 36
 IDX_COLOSSUS = 37
 
 # ---------------------------------------------------------------------------
-# Obs feature indices — pending unit counts (indices 53-63)
-# ---------------------------------------------------------------------------
-IDX_PENDING_PROBE = 53
-
-# ---------------------------------------------------------------------------
-# Obs feature indices — pending structure counts (indices 38-52)
-# Same order as completed structures (12-26); offset = +26.
+# Obs feature indices — pending structure counts (indices 38-51)
+# Same order as completed structures (12-26) but excludes WARPGATE (last item).
+# NEXUS, PYLON, GATEWAY, FORGE, TWILIGHTCOUNCIL, PHOTONCANNON, SHIELDBATTERY,
+# TEMPLARARCHIVE, ROBOTICSBAY, ROBOTICSFACILITY, ASSIMILATOR, CYBERNETICSCORE,
+# STARGATE, FLEETBEACON (14 total)
 # ---------------------------------------------------------------------------
 IDX_PEND_NEXUS            = 38
 IDX_PEND_PYLON            = 39
 IDX_PEND_GATEWAY          = 40
-IDX_PEND_WARPGATE         = 41
-IDX_PEND_FORGE            = 42
-IDX_PEND_TWILIGHTCOUNCIL  = 43
-IDX_PEND_PHOTONCANNON     = 44
-IDX_PEND_SHIELDBATTERY    = 45
-IDX_PEND_TEMPLARARCHIVE   = 46
-IDX_PEND_ROBOTICSBAY      = 47
-IDX_PEND_ROBOTICSFACILITY = 48
-IDX_PEND_ASSIMILATOR      = 49
-IDX_PEND_CYBERNETICSCORE  = 50
-IDX_PEND_STARGATE         = 51
-IDX_PEND_FLEETBEACON      = 52
+IDX_PEND_FORGE            = 41
+IDX_PEND_TWILIGHTCOUNCIL  = 42
+IDX_PEND_PHOTONCANNON     = 43
+IDX_PEND_SHIELDBATTERY    = 44
+IDX_PEND_TEMPLARARCHIVE   = 45
+IDX_PEND_ROBOTICSBAY      = 46
+IDX_PEND_ROBOTICSFACILITY = 47
+IDX_PEND_ASSIMILATOR      = 48
+IDX_PEND_CYBERNETICSCORE  = 49
+IDX_PEND_STARGATE         = 50
+IDX_PEND_FLEETBEACON      = 51
 
 # ---------------------------------------------------------------------------
-# Obs feature indices — idle production building counts (indices 64-67)
+# Obs feature indices — pending unit counts (indices 52-62)
 # ---------------------------------------------------------------------------
-IDX_IDLE_GW_WG = 64
-IDX_IDLE_SG = 65
-IDX_IDLE_ROBO = 66
-IDX_IDLE_WG = 67
+IDX_PENDING_PROBE = 52
 
 # ---------------------------------------------------------------------------
-# Obs feature indices — upgrade levels (indices 68-70)
+# Obs feature indices — idle production building counts (indices 63-66)
 # ---------------------------------------------------------------------------
-IDX_GROUND_WEAPONS_LVL = 68
-IDX_SHIELDS_LVL = 69
-IDX_AIR_WEAPONS_LVL = 70
+IDX_IDLE_GW_WG = 63
+IDX_IDLE_SG = 64
+IDX_IDLE_ROBO = 65
+IDX_IDLE_WG = 66
+
+# ---------------------------------------------------------------------------
+# Obs feature indices — upgrade levels (indices 67-69)
+# ---------------------------------------------------------------------------
+IDX_GROUND_WEAPONS_LVL = 67
+IDX_SHIELDS_LVL = 68
+IDX_AIR_WEAPONS_LVL = 69
 
 EPS = 0.01
 
@@ -126,6 +132,7 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     has_stargate = obs[:, IDX_STARGATE] > EPS
     has_fleet = obs[:, IDX_FLEETBEACON] > EPS
     has_robobay = obs[:, IDX_ROBOTICSBAY] > EPS
+    has_robo = obs[:, IDX_ROBOTICSFACILITY] > EPS
 
     # --- Building caps ---
     under_cybcore_cap = obs[:, IDX_CYBERNETICSCORE] < (1.5 / 10.0)
@@ -204,65 +211,68 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 13: build_templar_archive — needs Twilight Council, must not have one
     mask[:, 13] = has_twilight & no_temparch
 
-    # Action 14: train_zealot — needs idle Gateway
-    mask[:, 14] = has_idle_gw_wg
+    # Action 14: build_robotics_bay — needs Robotics Facility, must not have one
+    mask[:, 14] = has_robo & no_robobay
 
-    # Action 15: train_stalker — needs idle Gateway + Cybernetics Core
-    mask[:, 15] = has_idle_gw_wg & has_cybcore
+    # Action 15: build_shield_battery — needs Cybernetics Core
+    mask[:, 15] = has_cybcore
 
-    # Action 16: train_immortal — needs idle Robotics Facility
-    mask[:, 16] = has_idle_robo
+    # Action 16: train_zealot — needs idle Gateway
+    mask[:, 16] = has_idle_gw_wg
 
-    # Action 17: train_voidray — needs idle Stargate
-    mask[:, 17] = has_idle_sg
+    # Action 17: train_stalker — needs idle Gateway + Cybernetics Core
+    mask[:, 17] = has_idle_gw_wg & has_cybcore
 
-    # Action 18: train_carrier — needs idle Stargate + Fleet Beacon
-    mask[:, 18] = has_idle_sg & has_fleet
+    # Action 18: train_immortal — needs idle Robotics Facility
+    mask[:, 18] = has_idle_robo
 
-    # Action 19: train_high_templar — needs idle Gateway + Templar Archive
-    mask[:, 19] = has_idle_gw_wg & has_temparch
+    # Action 19: train_voidray — needs idle Stargate
+    mask[:, 19] = has_idle_sg
 
-    # Action 20: warp_in_zealot — needs idle Warpgate
-    mask[:, 20] = has_idle_wg
+    # Action 20: train_carrier — needs idle Stargate + Fleet Beacon
+    mask[:, 20] = has_idle_sg & has_fleet
 
-    # Action 21: warp_in_stalker — needs idle Warpgate + Cybernetics Core
-    mask[:, 21] = has_idle_wg & has_cybcore
+    # Action 21: train_high_templar — needs idle Gateway + Templar Archive
+    mask[:, 21] = has_idle_gw_wg & has_temparch
 
-    # Action 22: warp_in_high_templar — needs idle Warpgate + Templar Archive
-    mask[:, 22] = has_idle_wg & has_temparch
+    # Action 22: warp_in_zealot — needs idle Warpgate
+    mask[:, 22] = has_idle_wg
 
-    # Action 23: archon_warp — needs 2+ idle High Templars
-    mask[:, 23] = has_2_hightemplar
+    # Action 23: warp_in_stalker — needs idle Warpgate + Cybernetics Core
+    mask[:, 23] = has_idle_wg & has_cybcore
 
-    # Action 24: research_charge — needs Twilight Council
-    mask[:, 24] = has_twilight
+    # Action 24: warp_in_high_templar — needs idle Warpgate + Templar Archive
+    mask[:, 24] = has_idle_wg & has_temparch
 
-    # Action 25: research_warp_gate — needs Cybernetics Core
-    mask[:, 25] = has_cybcore
+    # Action 25: research_charge — needs Twilight Council
+    mask[:, 25] = has_twilight
 
-    # Action 26: upgrade_ground_weapons — needs Forge, level < 3
-    mask[:, 26] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
+    # Action 26: research_warp_gate — needs Cybernetics Core
+    mask[:, 26] = has_cybcore
 
-    # Action 27: upgrade_air_weapons — needs Cybernetics Core, level < 3
-    mask[:, 27] = has_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
+    # Action 27: upgrade_ground_weapons — needs Forge, level < 3
+    mask[:, 27] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
 
-    # Action 28: upgrade_shields — needs Forge, level < 3
-    mask[:, 28] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
+    # Action 28: upgrade_air_weapons — needs Cybernetics Core, level < 3
+    mask[:, 28] = has_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
 
-    # Action 29: attack_enemy_base — needs at least one combat unit
-    mask[:, 29] = has_army
+    # Action 29: upgrade_shields — needs Forge, level < 3
+    mask[:, 29] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
 
-    # Action 30: train_adept — needs idle Gateway + Cybernetics Core
-    mask[:, 30] = has_idle_gw_wg & has_cybcore
+    # Action 30: attack_enemy_base — needs at least one combat unit
+    mask[:, 30] = has_army
 
-    # Action 31: train_phoenix — needs idle Stargate
-    mask[:, 31] = has_idle_sg
+    # Action 31: train_adept — needs idle Gateway + Cybernetics Core
+    mask[:, 31] = has_idle_gw_wg & has_cybcore
 
-    # Action 32: train_colossus — needs idle Robotics Facility + Robotics Bay (1-of)
-    mask[:, 32] = has_idle_robo & has_robobay
+    # Action 32: train_phoenix — needs idle Stargate
+    mask[:, 32] = has_idle_sg
 
-    # Action 33: warp_in_adept — needs idle Warpgate + Cybernetics Core
-    mask[:, 33] = has_idle_wg & has_cybcore
+    # Action 33: train_colossus — needs idle Robotics Facility + Robotics Bay (1-of)
+    mask[:, 33] = has_idle_robo & has_robobay
+
+    # Action 34: warp_in_adept — needs idle Warpgate + Cybernetics Core
+    mask[:, 34] = has_idle_wg & has_cybcore
 
     return mask
 
@@ -320,7 +330,6 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # --- Pending structure presence ---
     pend_pylon    = obs[:, IDX_PEND_PYLON]           > EPS
     pend_gateway  = obs[:, IDX_PEND_GATEWAY]         > EPS
-    pend_warpgate = obs[:, IDX_PEND_WARPGATE]        > EPS
     pend_cybcore  = obs[:, IDX_PEND_CYBERNETICSCORE] > EPS
     pend_stargate = obs[:, IDX_PEND_STARGATE]        > EPS
     pend_robo     = obs[:, IDX_PEND_ROBOTICSFACILITY] > EPS
@@ -331,7 +340,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # --- Pending-or-complete: player has committed to building this ---
     poc_pylon    = has_pylon    | pend_pylon
     poc_gateway  = has_gateway  | pend_gateway
-    poc_warpgate = has_warpgate | pend_warpgate
+    poc_warpgate = has_warpgate
     poc_cybcore  = has_cybcore  | pend_cybcore
     poc_stargate = has_stargate | pend_stargate
     poc_robo     = has_robo     | pend_robo
@@ -404,65 +413,68 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 13: build_templar_archive — twilight poc, no existing templar archive
     mask[:, 13] = poc_twilight & no_temparch
 
-    # Action 14: train_zealot — gateway poc (no idle check)
-    mask[:, 14] = poc_gateway
+    # Action 14: build_robotics_bay — robo poc, no existing robotics bay
+    mask[:, 14] = poc_robo & ~has_robobay
 
-    # Action 15: train_stalker — gateway + cybcore both poc (no idle check)
-    mask[:, 15] = poc_gateway & poc_cybcore
+    # Action 15: build_shield_battery — cybcore poc
+    mask[:, 15] = poc_cybcore
 
-    # Action 16: train_immortal — robo poc (no idle check)
-    mask[:, 16] = poc_robo
+    # Action 16: train_zealot — gateway poc (no idle check)
+    mask[:, 16] = poc_gateway
 
-    # Action 17: train_voidray — stargate poc (no idle check)
-    mask[:, 17] = poc_stargate
+    # Action 17: train_stalker — gateway + cybcore both poc (no idle check)
+    mask[:, 17] = poc_gateway & poc_cybcore
 
-    # Action 18: train_carrier — stargate poc + fleet beacon complete
-    mask[:, 18] = poc_stargate & has_fleet
+    # Action 18: train_immortal — robo poc (no idle check)
+    mask[:, 18] = poc_robo
 
-    # Action 19: train_high_templar — gateway + templar archive both poc (no idle)
-    mask[:, 19] = poc_gateway & poc_temparch
+    # Action 19: train_voidray — stargate poc (no idle check)
+    mask[:, 19] = poc_stargate
 
-    # Action 20: warp_in_zealot — warpgate poc (no idle check)
-    mask[:, 20] = poc_warpgate
+    # Action 20: train_carrier — stargate poc + fleet beacon complete
+    mask[:, 20] = poc_stargate & has_fleet
 
-    # Action 21: warp_in_stalker — warpgate + cybcore both poc (no idle check)
-    mask[:, 21] = poc_warpgate & poc_cybcore
+    # Action 21: train_high_templar — gateway + templar archive both poc (no idle)
+    mask[:, 21] = poc_gateway & poc_temparch
 
-    # Action 22: warp_in_high_templar — warpgate + templar archive both poc (no idle)
-    mask[:, 22] = poc_warpgate & poc_temparch
+    # Action 22: warp_in_zealot — warpgate poc (no idle check)
+    mask[:, 22] = poc_warpgate
 
-    # Action 23: archon_warp — needs 2+ completed High Templars
-    mask[:, 23] = has_2_hightemplar
+    # Action 23: warp_in_stalker — warpgate + cybcore both poc (no idle check)
+    mask[:, 23] = poc_warpgate & poc_cybcore
 
-    # Action 24: research_charge — twilight poc
-    mask[:, 24] = poc_twilight
+    # Action 24: warp_in_high_templar — warpgate + templar archive both poc (no idle)
+    mask[:, 24] = poc_warpgate & poc_temparch
 
-    # Action 25: research_warp_gate — cybcore poc
-    mask[:, 25] = poc_cybcore
+    # Action 25: research_charge — twilight poc
+    mask[:, 25] = poc_twilight
 
-    # Action 26: upgrade_ground_weapons \u2014 forge poc (no level cap in training to handle lag)
-    mask[:, 26] = poc_forge
+    # Action 26: research_warp_gate — cybcore poc
+    mask[:, 26] = poc_cybcore
 
-    # Action 27: upgrade_air_weapons \u2014 cybcore poc (no level cap in training)
-    mask[:, 27] = poc_cybcore
+    # Action 27: upgrade_ground_weapons — forge poc (no level cap in training to handle lag)
+    mask[:, 27] = poc_forge
 
-    # Action 28: upgrade_shields \u2014 forge poc (no level cap in training)
-    mask[:, 28] = poc_forge
+    # Action 28: upgrade_air_weapons — cybcore poc (no level cap in training)
+    mask[:, 28] = poc_cybcore
 
-    # Action 29: attack_enemy_base — needs army
-    mask[:, 29] = has_army
+    # Action 29: upgrade_shields — forge poc (no level cap in training)
+    mask[:, 29] = poc_forge
 
-    # Action 30: train_adept — gateway + cybcore both poc (no idle check)
-    mask[:, 30] = poc_gateway & poc_cybcore
+    # Action 30: attack_enemy_base — needs army
+    mask[:, 30] = has_army
 
-    # Action 31: train_phoenix — stargate poc (no idle check)
-    mask[:, 31] = poc_stargate
+    # Action 31: train_adept — gateway + cybcore both poc (no idle check)
+    mask[:, 31] = poc_gateway & poc_cybcore
 
-    # Action 32: train_colossus — robo poc + robobay complete (no idle check)
-    mask[:, 32] = poc_robo & has_robobay
+    # Action 32: train_phoenix — stargate poc (no idle check)
+    mask[:, 32] = poc_stargate
 
-    # Action 33: warp_in_adept — warpgate + cybcore both poc (no idle check)
-    mask[:, 33] = poc_warpgate & poc_cybcore
+    # Action 33: train_colossus — robo poc + robobay complete (no idle check)
+    mask[:, 33] = poc_robo & has_robobay
+
+    # Action 34: warp_in_adept — warpgate + cybcore both poc (no idle check)
+    mask[:, 34] = poc_warpgate & poc_cybcore
 
     return mask
 
