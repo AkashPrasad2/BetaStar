@@ -7,7 +7,14 @@ from sc2.ids.unit_typeid import UnitTypeId
 
 from observation_wrapper import ObservationWrapper
 from model import load_model, predict_action, MAX_CONTEXT
-from helpers import auto_saturate_assimilators, set_production_rally_points, rally_idle_army, auto_attack, defend_structures
+from helpers import (
+    auto_saturate_assimilators, 
+    set_production_rally_points, 
+    rally_idle_army, 
+    auto_attack, 
+    defend_structures,
+    auto_merge_archons
+)
 import actions
 
 CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
@@ -28,6 +35,7 @@ class ProtossBot(BotAI):
         await self.distribute_workers()
         await auto_saturate_assimilators(self)
         await set_production_rally_points(self)
+        await auto_merge_archons(self)  # Auto-merge idle High Templars
         await defend_structures(self)  # Check defense first (higher priority)
         await rally_idle_army(self)
         await auto_attack(self)

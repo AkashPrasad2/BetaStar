@@ -12,7 +12,7 @@ ARMY_TYPES = [
     UnitTypeId.ZEALOT,
     UnitTypeId.STALKER,
     UnitTypeId.ADEPT,
-    UnitTypeId.HIGHTEMPLAR,
+    # UnitTypeId.HIGHTEMPLAR,  # Excluded so auto-merge won't interrupt them
     UnitTypeId.ARCHON,
     UnitTypeId.IMMORTAL,
     UnitTypeId.COLOSSUS,
@@ -40,9 +40,10 @@ DEFEND_RECHECK_INTERVAL = 5     # seconds between defense rechecks
 
 async def build_structure(bot: BotAI, building: UnitTypeId):
     """Helper to systematically build structures depending on the type."""
-    
+
     # Get starting nexus (closest to start_location)
-    starting_nexus = bot.townhalls.closest_to(bot.start_location) if bot.townhalls else None
+    starting_nexus = bot.townhalls.closest_to(
+        bot.start_location) if bot.townhalls else None
 
     if building == UnitTypeId.ASSIMILATOR:
         if bot.can_afford(UnitTypeId.ASSIMILATOR) and starting_nexus:
@@ -222,6 +223,28 @@ async def defend_structures(bot: BotAI):
 
 
 # ---------------------------------------------------------------------------
+# Auto-merge High Templars into Archons
+# ---------------------------------------------------------------------------
+
+async def auto_merge_archons(bot: BotAI):
+    """
+    Automatically merge pairs of High Templars into Archons.
+    Merges ANY HTs (not just idle) to ensure merge completes without interruption.
+    """
+    hts = bot.units(UnitTypeId.HIGHTEMPLAR)
+
+    if hts.amount >= 2:
+        # Take first two HTs and merge them
+        ht1 = hts[0]
+        ht2 = hts[1]
+
+        # Issue morph command from first HT targeting second
+        ht1(AbilityId.MORPH_ARCHON, ht2)
+
+        print(f"[{bot.time:.0f}s] AUTO-MERGE: Merging 2 High Templars into Archon")
+
+
+# ---------------------------------------------------------------------------
 # Auto-attack
 # ---------------------------------------------------------------------------
 
@@ -241,7 +264,7 @@ async def auto_attack(bot: BotAI):
         (UnitTypeId.ZEALOT,      2),
         (UnitTypeId.STALKER,     2),
         (UnitTypeId.ADEPT,       2),
-        (UnitTypeId.HIGHTEMPLAR, 2),
+        # (UnitTypeId.HIGHTEMPLAR, 2),  # Excluded from army commands
         (UnitTypeId.ARCHON,      4),
         (UnitTypeId.IMMORTAL,    4),
         (UnitTypeId.COLOSSUS,    6),
