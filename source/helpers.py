@@ -387,3 +387,43 @@ async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId, ability_id: AbilityId)
     # Fallback: warp at pylon
     warpgate.warp_in(unit_type, pylon.position)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Chrono boost helper
+# ---------------------------------------------------------------------------
+
+async def chrono_boost_production(bot: BotAI):
+    """
+    Automatically chrono boost a production structure if it is currently building something.
+    Priority order: robo facility, then stargate, then warpgate.
+    Uses nexuses with enough energy for a chrono boost.
+    """
+    for nexus in bot.townhalls.ready:
+        if nexus.energy < 50:  # Chrono boost costs 50 energy
+            continue
+        
+        # Check production structures in priority order
+        # 1. Robotics Facility
+        for robo in bot.structures(UnitTypeId.ROBOTICSFACILITY).ready:
+            if robo.is_idle:
+                continue
+            if not robo.has_buff(AbilityId.CHRONOBOOSTENERGYCOST):
+                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, robo)
+                return
+        
+        # 2. Stargate
+        for stargate in bot.structures(UnitTypeId.STARGATE).ready:
+            if stargate.is_idle:
+                continue
+            if not stargate.has_buff(AbilityId.CHRONOBOOSTENERGYCOST):
+                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargate)
+                return
+        
+        # 3. Warpgate
+        for warpgate in bot.structures(UnitTypeId.WARPGATE).ready:
+            if warpgate.is_idle:
+                continue
+            if not warpgate.has_buff(AbilityId.CHRONOBOOSTENERGYCOST):
+                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, warpgate)
+                return

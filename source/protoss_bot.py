@@ -13,6 +13,7 @@ from helpers import (
     set_production_rally_points,
     manage_army,
     auto_merge_archons,
+    chrono_boost_production
 )
 import actions
 
@@ -47,6 +48,7 @@ class ProtossBot(BotAI):
         await set_production_rally_points(self)
         await auto_merge_archons(self)
         await manage_army(self)
+        await chrono_boost_production(self)
 
         # Model cooldown (subtract 1 at each frame)
         if self.action_cooldown > 0:
