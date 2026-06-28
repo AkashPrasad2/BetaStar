@@ -8,12 +8,11 @@ from sc2.ids.unit_typeid import UnitTypeId
 from observation_wrapper import ObservationWrapper
 from model import load_model, predict_action, MAX_CONTEXT
 from helpers import (
-    auto_saturate_assimilators, 
-    set_production_rally_points, 
-    rally_idle_army, 
-    auto_attack, 
-    defend_structures,
-    auto_merge_archons
+    ArmyState,
+    auto_saturate_assimilators,
+    set_production_rally_points,
+    manage_army,
+    auto_merge_archons,
 )
 import actions
 
@@ -27,18 +26,27 @@ class ProtossBot(BotAI):
         super().__init__()
         self.obs_wrapper = ObservationWrapper()
         self.model = load_model(CHECKPOINT_PATH, device=DEVICE)
-        self.action_cooldown = 0  # start at 0 so we act at step 0
-        self.obs_history = []   # rolling window of observation vectors
+        self.action_cooldown = 0    # start at 0 so we act at step 0
+        self.obs_history: list = []  # rolling window of observation vectors
+
+        # Army state machine
+        self.army_state = ArmyState.RALLY
+        self.enemy_bases_cleared: set = set()
+
+        # Timing
+        self.last_army_command_time: float = 0.0
+        self.last_rally_time: float = 0.0
+
+        # Production buildings that have had rally points set
+        self.rally_tags_set: set = set()
 
     async def on_step(self, iteration: int):
         # Always-on behaviours
         await self.distribute_workers()
         await auto_saturate_assimilators(self)
         await set_production_rally_points(self)
-        await auto_merge_archons(self)  # Auto-merge idle High Templars
-        await defend_structures(self)  # Check defense first (higher priority)
-        await rally_idle_army(self)
-        await auto_attack(self)
+        await auto_merge_archons(self)
+        await manage_army(self)
 
         # Model cooldown (subtract 1 at each frame)
         if self.action_cooldown > 0:
@@ -61,7 +69,7 @@ class ProtossBot(BotAI):
         print(
             f"[{self.time:.0f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
 
-        # illegal actions will faily silently (just continue to next step)
+        # Illegal actions fail silently (just continue to next step)
         await actions.execute_action(action_id, self)
         self.action_cooldown = 22
 

@@ -2,6 +2,7 @@ from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 from sc2.position import Point2
+from enum import Enum
 import random
 
 # ---------------------------------------------------------------------------
@@ -12,7 +13,7 @@ ARMY_TYPES = [
     UnitTypeId.ZEALOT,
     UnitTypeId.STALKER,
     UnitTypeId.ADEPT,
-    # UnitTypeId.HIGHTEMPLAR,  # Excluded so auto-merge won't interrupt them
+    # High templar excluded so auto-merge won't be interrupted by other army commands
     UnitTypeId.ARCHON,
     UnitTypeId.IMMORTAL,
     UnitTypeId.COLOSSUS,
@@ -27,11 +28,49 @@ PRODUCTION_BUILDINGS = [
     UnitTypeId.ROBOTICSFACILITY,
 ]
 
-# How long a structure must be at reduced health before triggering defense
-# (avoids false positives from shield regen etc.)
-DEFEND_HEALTH_THRESHOLD = 0.85   # trigger if health_pct drops below this
-RALLY_INTERVAL = 30              # seconds between passive army rallies
-DEFEND_RECHECK_INTERVAL = 5     # seconds between defense rechecks
+# trigger defense if any completed structure drops below this HP %
+DEFEND_HEALTH_THRESHOLD = 0.85
+ATTACK_SUPPLY_THRESHOLD = 70    # army supply needed to initiate an attack
+RETREAT_SUPPLY_THRESHOLD = 30   # army supply floor — retreat below this
+ATTACK_TIME_CAP = 1680          # hard attack at 28 min regardless of supply
+RALLY_INTERVAL = 30             # seconds between passive rally commands
+# seconds between re-issuing army orders (avoid spam)
+ARMY_COMMAND_INTERVAL = 5
+
+
+class ArmyState(Enum):
+    RALLY = "RALLY"
+    DEFEND = "DEFEND"
+    ATTACK = "ATTACK"
+
+
+def get_army_supply(bot: BotAI) -> int:
+    army_types_supply = [
+        (UnitTypeId.ZEALOT,      2),
+        (UnitTypeId.STALKER,     2),
+        (UnitTypeId.ADEPT,       2),
+        (UnitTypeId.HIGHTEMPLAR, 2),
+        (UnitTypeId.ARCHON,      4),
+        (UnitTypeId.IMMORTAL,    4),
+        (UnitTypeId.COLOSSUS,    6),
+        (UnitTypeId.VOIDRAY,     4),
+        (UnitTypeId.PHOENIX,     2),
+        (UnitTypeId.CARRIER,     6),
+    ]
+    return sum(bot.units(ut).amount * cost for ut, cost in army_types_supply)
+
+
+def _structures_under_attack(bot: BotAI) -> list:
+    """
+    Returns completed structures whose health has dropped below the defend
+    threshold. Excludes structures still under construction — their health
+    naturally starts at 1% and climbs to 100%, which would otherwise
+    trigger a false defense response on every new build.
+    """
+    return [
+        s for s in bot.structures
+        if s.is_ready and s.health_percentage < DEFEND_HEALTH_THRESHOLD
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +80,6 @@ DEFEND_RECHECK_INTERVAL = 5     # seconds between defense rechecks
 async def build_structure(bot: BotAI, building: UnitTypeId):
     """Helper to systematically build structures depending on the type."""
 
-    # Get starting nexus (closest to start_location)
     starting_nexus = bot.townhalls.closest_to(
         bot.start_location) if bot.townhalls else None
 
@@ -107,119 +145,177 @@ async def auto_saturate_assimilators(bot: BotAI):
 # Production rally points
 # ---------------------------------------------------------------------------
 
-# We track rally-set tags in a bot-level set so we only issue the command
-# once per building (persistent across frames unlike hasattr on sc2 units).
-def _get_rally_tag_set(bot: BotAI) -> set:
-    if not hasattr(bot, "_rally_tags_set"):
-        bot._rally_tags_set = set()
-    return bot._rally_tags_set
-
-
 async def set_production_rally_points(bot: BotAI):
     """Set rally points for production buildings to the army staging area."""
     if not bot.townhalls:
         return
 
     rally_point = bot.townhalls.center
-    tag_set = _get_rally_tag_set(bot)
 
     for unit_type in PRODUCTION_BUILDINGS:
         for building in bot.structures(unit_type).ready:
-            if building.tag not in tag_set:
+            if building.tag not in bot.rally_tags_set:
                 building(AbilityId.RALLY_UNITS, rally_point)
-                tag_set.add(building.tag)
+                bot.rally_tags_set.add(building.tag)
                 print(f"[{bot.time:.0f}s] Rally point set for {unit_type.name} "
                       f"→ {rally_point}")
 
 
 # ---------------------------------------------------------------------------
-# Passive army rally (move idle troops to staging area)
+# Army management
 # ---------------------------------------------------------------------------
 
-async def rally_idle_army(bot: BotAI):
+async def manage_army(bot: BotAI):
     """
-    Every RALLY_INTERVAL seconds, move idle army units to the nexus center.
-    Skipped once auto-attack is active so we don't interrupt attacks.
+    Single entry point for all army behaviour. Evaluates state transitions
+    first, then issues exactly one set of orders based on the current state.
+
+    State machine:
+        RALLY  →  ATTACK  if army supply >= ATTACK_SUPPLY_THRESHOLD or time cap
+        RALLY  →  DEFEND  if a completed structure is taking health damage
+        DEFEND →  RALLY   if the threat clears (no more damaged structures)
+        ATTACK →  RALLY   if army supply drops below RETREAT_SUPPLY_THRESHOLD
     """
-    if getattr(bot, "_auto_attack_initiated", False):
+    army = bot.units.of_type(ARMY_TYPES)
+
+    _transition_state(bot)
+
+    # Throttle actual unit commands to avoid spam, but always evaluate state
+    if bot.time - bot.last_army_command_time < ARMY_COMMAND_INTERVAL:
+        return
+    bot.last_army_command_time = bot.time
+
+    if not army:
         return
 
-    if not hasattr(bot, "_last_rally_time"):
-        bot._last_rally_time = 0.0
+    if bot.army_state == ArmyState.RALLY:
+        await _do_rally(bot, army)
 
-    if bot.time - bot._last_rally_time < RALLY_INTERVAL:
+    elif bot.army_state == ArmyState.DEFEND:
+        _do_defend(bot, army)
+
+    elif bot.army_state == ArmyState.ATTACK:
+        _do_attack(bot, army)
+
+
+def _transition_state(bot: BotAI):
+    """
+    Evaluate and apply state transitions. Called every frame so reactions
+    are immediate even if unit commands are throttled.
+    """
+    supply = get_army_supply(bot)
+
+    # never retreat :)
+    # if bot.army_state == ArmyState.ATTACK:
+    #     if supply < RETREAT_SUPPLY_THRESHOLD:
+    #         print(
+    #             f"[{bot.time:.0f}s] ARMY: Supply dropped to {supply}, retreating to RALLY.")
+    #         bot.army_state = ArmyState.RALLY
+    #     return
+
+    if bot.army_state == ArmyState.DEFEND:
+        if not _structures_under_attack(bot):
+            print(f"[{bot.time:.0f}s] ARMY: Threat cleared, returning to RALLY.")
+            bot.army_state = ArmyState.RALLY
         return
 
-    bot._last_rally_time = bot.time
+    # RALLY: check for transitions to DEFEND or ATTACK (DEFEND takes priority)
+    under_attack = _structures_under_attack(bot)
+    if under_attack:
+        target = min(under_attack, key=lambda s: s.health_percentage)
+        print(f"[{bot.time:.0f}s] ARMY: {target.name} under attack "
+              f"({target.health_percentage:.0%} HP) — switching to DEFEND.")
+        bot.army_state = ArmyState.DEFEND
+        return
+
+    if supply >= ATTACK_SUPPLY_THRESHOLD or bot.time >= ATTACK_TIME_CAP:
+        print(f"[{bot.time:.0f}s] ARMY: Supply={supply}, switching to ATTACK.")
+        bot.army_state = ArmyState.ATTACK
+
+
+async def _do_rally(bot: BotAI, army):
+    """Move idle army units to the staging area near our townhalls."""
+    if bot.time - bot.last_rally_time < RALLY_INTERVAL:
+        return
+    bot.last_rally_time = bot.time
 
     if not bot.townhalls:
         return
 
     staging = bot.townhalls.center
-    army = bot.units.of_type(ARMY_TYPES)
+    idle_army = [u for u in army if u.is_idle]
+    if idle_army:
+        for unit in idle_army:
+            unit.attack(staging)  # attack-move so they engage anything nearby
+        print(
+            f"[{bot.time:.0f}s] ARMY: Rallying {len(idle_army)} idle unit(s) → {staging}")
 
-    if not army:
+
+def _do_defend(bot: BotAI, army):
+    """Send army to defend the most damaged completed structure."""
+    under_attack = _structures_under_attack(bot)
+    if not under_attack:
+        return  # transition will handle this next frame
+
+    target = min(under_attack, key=lambda s: s.health_percentage)
+    _issue_attack(bot, army, target.position,
+                  f"defending {target.name} ({target.health_percentage:.0%} HP)")
+
+
+def _do_attack(bot: BotAI, army):
+    """
+    Systematically attack enemy structures and bases.
+    Priority: visible structures → enemy start locations → expansions.
+    Clears locations as they are confirmed empty.
+    """
+    # Priority 1: visible enemy structures
+    if bot.enemy_structures:
+        target_pos = bot.enemy_structures.closest_to(
+            bot.start_location).position
+        _issue_attack(bot, army, target_pos, "visible enemy structure")
         return
 
-    # Use attack-move so units engage enemies on the way
+    # Priority 2: enemy start locations
+    for loc in bot.enemy_start_locations:
+        if not isinstance(loc, Point2):
+            loc = Point2(loc)
+        if loc in bot.enemy_bases_cleared:
+            continue
+        if not bot.is_visible(loc):
+            _issue_attack(bot, army, loc, "enemy start (unscouted)")
+            return
+        if not bot.enemy_structures.closer_than(10, loc):
+            bot.enemy_bases_cleared.add(loc)
+            print(f"[{bot.time:.0f}s] ARMY: Marked enemy start {loc} as cleared.")
+        else:
+            _issue_attack(bot, army, loc, "enemy start (structures present)")
+            return
+
+    # Priority 3: all expansion locations
+    for loc in bot.expansion_locations_list:
+        if loc in bot.enemy_bases_cleared:
+            continue
+        if not bot.is_visible(loc):
+            _issue_attack(bot, army, loc, "expansion (unscouted)")
+            return
+        if not bot.enemy_structures.closer_than(10, loc):
+            bot.enemy_bases_cleared.add(loc)
+            continue
+        else:
+            _issue_attack(bot, army, loc, "expansion (structures present)")
+            return
+
+    # Everything cleared — reset and sweep again
+    print(f"[{bot.time:.0f}s] ARMY: All known locations cleared, resetting.")
+    bot.enemy_bases_cleared.clear()
+
+
+def _issue_attack(bot: BotAI, army, target_pos: Point2, reason: str):
+    """Issue attack-move to all army units."""
+    print(f"[{bot.time:.0f}s] ARMY [{bot.army_state.value}]: "
+          f"{army.amount} unit(s) → {target_pos} ({reason})")
     for unit in army:
-        unit.attack(staging)
-
-    print(f"[{bot.time:.0f}s] Rallying {army.amount} unit(s) → staging at {staging}")
-
-
-# ---------------------------------------------------------------------------
-# Defense
-# ---------------------------------------------------------------------------
-
-async def defend_structures(bot: BotAI):
-    """
-    Send army to defend if any structure is taking significant HP damage.
-    Resets once no structures are under threat.
-    Uses a cooldown so we don't spam commands every frame.
-    """
-    if getattr(bot, "_auto_attack_initiated", False):
-        return
-
-    if not hasattr(bot, "_last_defend_check"):
-        bot._last_defend_check = 0.0
-    if not hasattr(bot, "_defending"):
-        bot._defending = False
-
-    if bot.time - bot._last_defend_check < DEFEND_RECHECK_INTERVAL:
-        return
-    bot._last_defend_check = bot.time
-
-    # Find structures that are meaningfully damaged (not just shield chip)
-    under_attack = [
-        s for s in bot.structures
-        if s.health_percentage < DEFEND_HEALTH_THRESHOLD
-    ]
-
-    if under_attack:
-        # Pick the most damaged structure as the rally point
-        target = min(under_attack, key=lambda s: s.health_percentage)
-        army = bot.units.of_type(ARMY_TYPES)
-
-        if army and not bot._defending:
-            print(f"[{bot.time:.0f}s] DEFEND: {len(under_attack)} structure(s) under attack. "
-                  f"Sending {army.amount} unit(s) to defend {target.name} "
-                  f"({target.health_percentage:.0%} HP) at {target.position}")
-            bot._defending = True
-
-        for unit in army:
-            unit.attack(target.position)
-
-    elif bot._defending:
-        # Threat cleared — stand down and re-rally
-        staging = bot.townhalls.center if bot.townhalls else None
-        army = bot.units.of_type(ARMY_TYPES)
-        if staging and army:
-            for unit in army:
-                unit.attack(staging)
-        bot._defending = False
-        print(f"[{bot.time:.0f}s] DEFEND: Threat cleared. Returning {army.amount if army else 0} "
-              f"unit(s) to staging.")
+        unit.attack(target_pos)
 
 
 # ---------------------------------------------------------------------------
@@ -227,125 +323,28 @@ async def defend_structures(bot: BotAI):
 # ---------------------------------------------------------------------------
 
 async def auto_merge_archons(bot: BotAI):
-    """
-    Automatically merge pairs of High Templars into Archons.
-    Merges ANY HTs (not just idle) to ensure merge completes without interruption.
-    """
+    """Only issue merge command if HTs aren't already mergeing (avoid spam)"""
     hts = bot.units(UnitTypeId.HIGHTEMPLAR)
 
     if hts.amount >= 2:
-        # Take first two HTs and merge them
+        # Check if any HT already has a morph order
+        for ht in hts:
+            # If any HT is already morphing, don't issue new commands
+            if ht.orders:  # Has active orders
+                for order in ht.orders:
+                    if order.ability.id == AbilityId.MORPH_ARCHON:
+                        return  # Already merging, don't interfere
+
+        # No merge in progress, start one
         ht1 = hts[0]
         ht2 = hts[1]
-
-        # Issue morph command from first HT targeting second
         ht1(AbilityId.MORPH_ARCHON, ht2)
-
-        print(f"[{bot.time:.0f}s] AUTO-MERGE: Merging 2 High Templars into Archon")
-
-
-# ---------------------------------------------------------------------------
-# Auto-attack
-# ---------------------------------------------------------------------------
-
-async def auto_attack(bot: BotAI):
-    """
-    Attack when army supply exceeds threshold or game time is long.
-    Systematically walks enemy base locations and known expansion spots.
-    """
-    if not hasattr(bot, "_auto_attack_initiated"):
-        bot._auto_attack_initiated = False
-    if not hasattr(bot, "_cleared_bases"):
-        bot._cleared_bases = set()
-    if not hasattr(bot, "_last_attack_order_time"):
-        bot._last_attack_order_time = 0.0
-
-    army_types_supply = [
-        (UnitTypeId.ZEALOT,      2),
-        (UnitTypeId.STALKER,     2),
-        (UnitTypeId.ADEPT,       2),
-        # (UnitTypeId.HIGHTEMPLAR, 2),  # Excluded from army commands
-        (UnitTypeId.ARCHON,      4),
-        (UnitTypeId.IMMORTAL,    4),
-        (UnitTypeId.COLOSSUS,    6),
-        (UnitTypeId.VOIDRAY,     4),
-        (UnitTypeId.PHOENIX,     2),
-        (UnitTypeId.CARRIER,     6),
-    ]
-    army_supply = sum(
-        bot.units(ut).amount * cost for ut, cost in army_types_supply
-    )
-
-    should_attack = army_supply >= 30 or bot.time >= 1680  # 28 min hard cap
-
-    if not should_attack:
-        return
-
-    if not bot._auto_attack_initiated:
-        bot._auto_attack_initiated = True
-        print(f"[{bot.time:.0f}s] AUTO-ATTACK: Threshold reached "
-              f"(army supply ≈ {army_supply}). Beginning attack run.")
-
-    # Only re-issue attack orders every few seconds to avoid command spam
-    if bot.time - bot._last_attack_order_time < 5.0:
-        return
-    bot._last_attack_order_time = bot.time
-
-    army = bot.units.of_type(ARMY_TYPES)
-    if not army:
-        return
-
-    # ---- Find best target ----
-    # Priority 1: enemy structures we can currently see
-    if bot.enemy_structures:
-        target_pos = bot.enemy_structures.closest_to(
-            bot.start_location).position
-        _issue_attack(bot, army, target_pos, "visible enemy structure")
-        return
-
-    # Priority 2: enemy start locations not yet confirmed cleared
-    for enemy_start in bot.enemy_start_locations:
-        loc = Point2(enemy_start) if not isinstance(
-            enemy_start, Point2) else enemy_start
-        if loc in bot._cleared_bases:
-            continue
-        # Check if we have intel that it's empty
-        if not bot.is_visible(loc):
-            _issue_attack(bot, army, loc, "enemy start (scouting)")
-            return
-        # Visible and no structures → mark cleared
-        if not bot.enemy_structures.closer_than(20, loc):
-            bot._cleared_bases.add(loc)
-            print(f"[{bot.time:.0f}s] AUTO-ATTACK: Marked {loc} as cleared.")
-        else:
-            _issue_attack(bot, army, loc, "enemy start (structures present)")
-            return
-
-    # Priority 3: expansion locations not cleared
-    for expansion in bot.expansion_locations_list:
-        if expansion in bot._cleared_bases:
-            continue
-        if bot.is_visible(expansion) and not bot.enemy_structures.closer_than(20, expansion):
-            bot._cleared_bases.add(expansion)
-            continue
-        _issue_attack(bot, army, expansion, "expansion (clearing)")
-        return
-
-    # Everything appears cleared — reset and start over
-    print(f"[{bot.time:.0f}s] AUTO-ATTACK: All known locations cleared, resetting.")
-    bot._cleared_bases.clear()
-
-
-def _issue_attack(bot: BotAI, army, target_pos: Point2, reason: str):
-    """Issue an attack-move to all army units and log it."""
-    print(f"[{bot.time:.0f}s] AUTO-ATTACK: {army.amount} unit(s) → {target_pos} ({reason})")
-    for unit in army:
-        unit.attack(target_pos)
-
+        print(f"[{bot.time:.0f}s] AUTO-MERGE: Initiated archon merge")
 
 # ---------------------------------------------------------------------------
 # Warp-in helper
 # ---------------------------------------------------------------------------
+
 
 async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId, ability_id: AbilityId) -> bool:
     """
@@ -365,7 +364,6 @@ async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId, ability_id: AbilityId)
     if not pylons:
         return False
 
-    # Prefer pylon closest to map center so warped units are near the front
     pylon = pylons.closest_to(bot.game_info.map_center)
 
     placement_radius = 6.0

@@ -2,7 +2,7 @@
 SC2 Protoss Imitation Learning — Transformer Model + Training Script
 =====================================================================
 Architecture:
-    obs (71,) -> input proj (71->128) -> sinusoidal pos enc
+    obs (70,) -> input proj (70->128) -> sinusoidal pos enc
     -> 4x causal TransformerEncoderLayer (d=128, heads=4, ff=256)
     -> LayerNorm -> Linear (128->35 logits)
 
