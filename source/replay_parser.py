@@ -463,7 +463,7 @@ class GameState:
         for u in UNITS:
             obs.append(self.pending_units[u] / 30.0)
 
-        # Idle production building features (indices 64-67)
+        # Idle production building features (indices 63-66)
         gw_wg_total = self.counts["GATEWAY"] + self.counts["WARPGATE"]
         gw_wg_busy = (self.pending_units["ZEALOT"]
                       + self.pending_units["STALKER"]
@@ -483,15 +483,15 @@ class GameState:
         idle_wg = max(
             0, wg_count - max(0, gw_wg_busy - self.counts["GATEWAY"]))
 
-        obs.append(idle_gw_wg / 5.0)   # index 64
-        obs.append(idle_sg / 5.0)   # index 65
-        obs.append(idle_robo / 5.0)   # index 66
-        obs.append(idle_wg / 5.0)   # index 67
+        obs.append(idle_gw_wg / 5.0)   # index 63
+        obs.append(idle_sg / 5.0)   # index 64
+        obs.append(idle_robo / 5.0)   # index 65
+        obs.append(idle_wg / 5.0)   # index 66
 
-        # Upgrade levels (indices 68-70): highest level commanded, normalised /3.
-        obs.append(self.upgrade_lvls["GROUND_WEAPONS"] / 3.0)  # index 68
-        obs.append(self.upgrade_lvls["SHIELDS"] / 3.0)         # index 69
-        obs.append(self.upgrade_lvls["AIR_WEAPONS"] / 3.0)     # index 70
+        # Upgrade levels (indices 67-69): highest level commanded, normalised /3.
+        obs.append(self.upgrade_lvls["GROUND_WEAPONS"] / 3.0)  # index 67
+        obs.append(self.upgrade_lvls["SHIELDS"] / 3.0)         # index 68
+        obs.append(self.upgrade_lvls["AIR_WEAPONS"] / 3.0)     # index 69
 
         assert len(
             obs) == OBS_SIZE, f"Obs size mismatch: {len(obs)} vs {OBS_SIZE}"
@@ -681,13 +681,14 @@ class ReplayParser:
                         state_strs = []
                         for i, name in enumerate(STRUCTURES):
                             h = obs[12 + i] * 10
-                            p = obs[38 + i] * 10
+                            # pending structures exclude WARPGATE (only 14 entries, 38-51)
+                            p = obs[38 + i] * 10 if i < len(STRUCTURES) - 1 else 0
                             if h > 0 or p > 0:
                                 state_strs.append(
                                     f"{name}(h={h:.0f},p={p:.0f})")
                         for i, name in enumerate(UNITS):
                             h = obs[27 + i] * 30
-                            p = obs[53 + i] * 30
+                            p = obs[52 + i] * 30
                             if h > 0 or p > 0:
                                 state_strs.append(
                                     f"{name}(h={h:.0f},p={p:.0f})")

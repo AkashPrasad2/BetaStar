@@ -22,7 +22,7 @@ Two masks are provided:
 
 import torch
 
-NUM_ACTIONS = 35  # 0-33 active; index 34 is a stale dataset entry, always masked illegal
+NUM_ACTIONS = 35  # all indices 0-34 are active actions (see ACTIONS in actions.py)
 
 # ---------------------------------------------------------------------------
 # Obs feature indices — completed structure counts (indices 12-26)

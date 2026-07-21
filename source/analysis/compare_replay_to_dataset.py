@@ -60,7 +60,7 @@ print("Only mapped abilities become training labels. Unmapped abilities are igno
 parser = ReplayParser(debug=False)
 EVENT_TO_ACTION = parser.EVENT_TO_ACTION
 
-# Action ID to name mapping (must cover all 34 actions including gaps)
+# Action ID to name mapping (must stay in sync with ACTIONS in source/actions.py — 35 actions, 0-34)
 ACTION_NAMES = {
     0: "do_nothing",
     1: "train_probe",
@@ -76,26 +76,27 @@ ACTION_NAMES = {
     11: "build_photon_cannon",
     12: "build_fleet_beacon",
     13: "build_templar_archive",
-    14: "train_zealot",
-    15: "train_stalker",
-    16: "train_immortal",
-    17: "train_voidray",
-    18: "train_carrier",
-    19: "train_high_templar",
-    20: "warp_in_zealot",
-    21: "warp_in_stalker",
-    22: "warp_in_high_templar",
-    23: "archon_warp",
-    24: "research_charge",
-    25: "research_warp_gate",
-    26: "upgrade_ground_weapons",
-    27: "upgrade_air_weapons",
-    28: "upgrade_shields",
-    29: "attack_enemy_base",
-    30: "train_adept",
-    31: "train_phoenix",
-    32: "train_colossus",
-    33: "warp_in_adept",
+    14: "build_robotics_bay",
+    15: "build_shield_battery",
+    16: "train_zealot",
+    17: "train_stalker",
+    18: "train_immortal",
+    19: "train_voidray",
+    20: "train_carrier",
+    21: "train_high_templar",
+    22: "warp_in_zealot",
+    23: "warp_in_stalker",
+    24: "warp_in_high_templar",
+    25: "research_charge",
+    26: "research_warp_gate",
+    27: "upgrade_ground_weapons",
+    28: "upgrade_air_weapons",
+    29: "upgrade_shields",
+    30: "attack_enemy_base",
+    31: "train_adept",
+    32: "train_phoenix",
+    33: "train_colossus",
+    34: "warp_in_adept",
 }
 
 # Categorize all commands
