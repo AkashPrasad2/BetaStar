@@ -1,2 +1,2 @@
 # BetaStar
-Training a model to play StarCraftII
+Training a model to play StarCraft II
