@@ -17,13 +17,16 @@ Usage:
 """
 
 import argparse
+import sys
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from obs_spec import OBS_SIZE, feature_names  # noqa: E402
+
 # ---- match your project constants ----
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-OBS_SIZE = 70
 NUM_ACTIONS = 35
 
 ACTIONS = [
@@ -64,37 +67,8 @@ ACTIONS = [
     "warp_in_adept",         # 34
 ]
 
-# Human-readable obs feature names matching the layout in observation_wrapper.py
-OBS_FEATURE_NAMES = (
-    ["time_norm"]
-    + [f"minerals_bin{i}" for i in range(4)]
-    + [f"gas_bin{i}" for i in range(4)]
-    + ["supply_used", "supply_cap", "worker_sat"]
-    + [f"struct_{s}" for s in [
-        "NEXUS", "PYLON", "GATEWAY", "FORGE", "TWILIGHTCOUNCIL",
-        "PHOTONCANNON", "SHIELDBATTERY", "TEMPLARARCHIVE", "ROBOTICSBAY",
-        "ROBOTICSFACILITY", "ASSIMILATOR", "CYBERNETICSCORE", "STARGATE", "FLEETBEACON", "WARPGATE"
-    ]]
-    + [f"unit_{u}" for u in [
-        "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON",
-        "IMMORTAL", "CARRIER", "VOIDRAY", "ADEPT", "PHOENIX", "COLOSSUS"
-    ]]
-    + [f"pend_struct_{s}" for s in [
-        "NEXUS", "PYLON", "GATEWAY", "FORGE", "TWILIGHTCOUNCIL",
-        "PHOTONCANNON", "SHIELDBATTERY", "TEMPLARARCHIVE", "ROBOTICSBAY",
-        "ROBOTICSFACILITY", "ASSIMILATOR", "CYBERNETICSCORE", "STARGATE", "FLEETBEACON"
-    ]]  # Note: WARPGATE excluded from pending
-    + [f"pend_unit_{u}" for u in [
-        "PROBE", "ZEALOT", "STALKER", "HIGHTEMPLAR", "ARCHON",
-        "IMMORTAL", "CARRIER", "VOIDRAY", "ADEPT", "PHOENIX", "COLOSSUS"
-    ]]
-    + ["idle_gw_wg", "idle_sg", "idle_robo", "idle_wg"]
-    + ["ground_weapons_lvl", "shields_lvl", "air_weapons_lvl"]
-)
-
-assert len(OBS_FEATURE_NAMES) == OBS_SIZE, (
-    f"Feature name count mismatch: {len(OBS_FEATURE_NAMES)} vs {OBS_SIZE}"
-)
+# Feature names come from obs_spec so they cannot drift from the real layout.
+OBS_FEATURE_NAMES = feature_names()
 
 
 def load_dataset(path: str):

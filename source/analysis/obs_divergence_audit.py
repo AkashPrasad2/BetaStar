@@ -1,27 +1,27 @@
 """
 obs_divergence_audit.py — Quantify training/inference observation skew
 ======================================================================
-The training observations come from replay_parser.GameState.to_obs(), which
-reconstructs state from sc2reader EVENTS. The inference observations come from
-observation_wrapper.get_observation(), which QUERIES the live SC2 API.
+Cross-checks the parser's reconstructed state against an INDEPENDENT
+reconstruction built from the tracker event stream.
 
-Those two are independent implementations, and they disagree. This script
-measures by how much, using only the replay files you already have.
+The parser (replay_parser.WindowedState) derives state from sc2reader per-object
+lifetimes (started_at / finished_at / died_at / type_history). This audit derives
+"structures under construction" from the UnitInit -> UnitDone event stream, which
+is exactly what the live API reports as `structures(X).not_ready.amount` at
+inference. Two independent paths to the same quantity, so a disagreement is a
+real defect in one of them.
 
-The key trick: sc2reader emits UnitInitEvent when a building actually STARTS
-construction, and UnitDoneEvent when it completes. The interval between them is
-exactly what the live API reports as `structures(X).not_ready.amount`. So we can
-reconstruct ground-truth "pending structures" with no build-time constants and
-no drift, then diff it against what the parser's command-counting produces.
+History: the original command-counting parser drifted from a true ~1-4 buildings
+under construction to a reported ~32 by minute 28. Section B is the regression
+test for that -- error should now stay flat near zero at every game minute.
 
 Reports
 -------
-  A. Command/completion conservation per type — raw drift magnitude
-  B. Pending-structure error vs UnitInit ground truth, bucketed by game minute
-     (shows whether error grows over the game, i.e. counter drift)
-  C. Ignored cancel events — the mechanism behind the drift
+  A. Command/completion conservation per type
+  B. Parser pending-structure error vs UnitInit ground truth, by game minute
+  C. Ignored cancel events
   D. Resource staleness from PlayerStatsEvent cadence
-  E. Feature-range sanity (unclipped time normalization)
+  E. Feature-range sanity (time normalization)
 
 Usage
 -----
@@ -52,10 +52,11 @@ except ImportError:  # pragma: no cover - depends on sc2reader version
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from replay_parser import (  # noqa: E402
-    GameState, GRID_INTERVAL_SECONDS, STRUCTURES,
+    WindowedState, GRID_INTERVAL_SECONDS, STRUCTURES,
     STRUCTURE_NAME_MAP, UNIT_NAME_MAP,
     BUILD_COMMAND_TO_STRUCTURE, TRAIN_COMMAND_TO_UNIT,
 )
+from obs_spec import TIME_NORM  # noqa: E402
 
 DEFAULT_REPLAY_DIR = r"C:\dev\BetaStar\replays\raw"
 
@@ -123,14 +124,16 @@ class ReplayAudit:
 def audit_replay(replay, pid: int) -> ReplayAudit:
     """
     Walk the replay once, maintaining three things in parallel:
-      1. the parser's GameState (command-derived pending)
-      2. ground-truth in-construction counts (UnitInit -> UnitDone)
+      1. the parser's reconstructed pending counts (object lifetimes)
+      2. ground-truth in-construction counts (UnitInit -> UnitDone events)
       3. staleness / conservation bookkeeping
     Snapshots are taken at the same 4s grid boundaries the parser uses.
     """
     a = ReplayAudit()
-    state = GameState()
     G = GRID_INTERVAL_SECONDS
+
+    # The parser's own reconstruction, which we are cross-checking.
+    parser_state = WindowedState(replay, pid)
 
     # Ground truth: count of structures currently between Init and Done.
     truth_pending = defaultdict(int)
@@ -139,20 +142,27 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
     last_stats_time = 0.0
     have_stats = False
 
+    def parser_pending(grid_idx: int) -> dict:
+        if not len(parser_state):
+            return {}
+        idx = min(grid_idx, len(parser_state) - 1)
+        return parser_state.windows[idx]["structures_pending"]
+
     def snapshot(grid_idx: int):
         t = grid_idx * G
-        parser_total = sum(state.pending_structures[s] for s in STRUCTURES)
+        pend = parser_pending(grid_idx)
+        parser_total = sum(pend.values())
         truth_total = sum(truth_pending.values())
         minute = int(t // 60)
         a.pending_by_minute[minute].append((parser_total, truth_total))
         for s in STRUCTURES:
-            err = state.pending_structures[s] - truth_pending.get(s, 0)
+            err = pend.get(s, 0) - truth_pending.get(s, 0)
             if err != 0:
                 a.pending_err_by_struct[s].append(err)
         if have_stats:
             a.staleness_samples.append(max(0.0, t - last_stats_time))
         a.windows += 1
-        if t > 720.0:
+        if t > TIME_NORM:
             a.windows_over_720 += 1
         a.max_time = max(a.max_time, float(t))
 
@@ -171,7 +181,6 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
                     a.stats_intervals.append(event.second - last_stats_time)
                 last_stats_time = event.second
                 have_stats = True
-                state.update_from_stats(event)
 
         elif HAVE_UNIT_INIT and isinstance(event, UnitInitEvent):
             if owned_by(event, pid):
@@ -190,17 +199,14 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
                     a.struct_dones[skey] += 1
                 if ukey:
                     a.unit_borns[ukey] += 1
-                state.unit_born_or_done(name)
 
         elif isinstance(event, UnitDiedEvent):
             if owned_by(event, pid):
-                name = event.unit.name
-                skey = STRUCTURE_NAME_MAP.get(name)
+                skey = STRUCTURE_NAME_MAP.get(event.unit.name)
                 # A building that dies while under construction (cancel or
-                # killed) leaves ground truth correct but the parser stuck.
+                # killed) must stop counting as pending.
                 if skey and truth_pending.get(skey, 0) > 0:
                     truth_pending[skey] -= 1
-                state.unit_died(name)
 
         elif isinstance(event, COMMAND_EVENTS):
             if event.player.pid == pid:
@@ -211,17 +217,13 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
                     a.train_commands[TRAIN_COMMAND_TO_UNIT[ability]] += 1
                 if ability in CANCEL_ABILITIES:
                     a.cancels[ability] += 1
-                state.on_build_command(ability)
-                state.on_train_command(ability)
-                state.on_upgrade_command(ability)
 
+    last = (parser_state.windows[-1] if len(parser_state) else
+            {"structures_pending": {}, "units_pending": {}})
     a.final_parser_pending = {
-        s: state.pending_structures[s] for s in STRUCTURES
-        if state.pending_structures[s] != 0
-    }
+        k: v for k, v in last["structures_pending"].items() if v != 0}
     a.final_parser_pending_units = {
-        u: v for u, v in state.pending_units.items() if v != 0
-    }
+        k: v for k, v in last["units_pending"].items() if v != 0}
     return a
 
 
@@ -313,18 +315,20 @@ def report_conservation(T: AuditTotals):
 
 
 def report_pending_error(T: AuditTotals):
-    section("B. PENDING-STRUCTURE ERROR vs GROUND TRUTH (by game minute)")
+    section("B. PARSER PENDING-STRUCTURE ERROR vs GROUND TRUTH (by game minute)")
     if not HAVE_UNIT_INIT:
         print("  UnitInitEvent unavailable in this sc2reader version — skipping.")
-        print("  (Section A still measures drift without it.)")
+        print("  (Section A still measures conservation without it.)")
         return
 
-    print("  Ground truth = UnitInit..UnitDone interval, which is exactly what")
-    print("  the live API reports as not_ready.amount at inference.\n")
+    print("  Parser = object lifetimes. Ground truth = UnitInit..UnitDone events,")
+    print("  which is what the live API reports as not_ready.amount at inference.")
+    print("  Error should stay flat near zero at every minute.\n")
     print(f"  {'Minute':>7}  {'N':>8}  {'parser mean':>12}  {'truth mean':>11}  "
           f"{'mean err':>9}  {'MAE':>7}")
     print(f"  {'-' * 7}  {'-' * 8}  {'-' * 12}  {'-' * 11}  {'-' * 9}  {'-' * 7}")
 
+    worst_mae = 0.0
     for minute in sorted(T.pending_by_minute):
         vals = T.pending_by_minute[minute]
         if len(vals) < 20:
@@ -333,9 +337,20 @@ def report_pending_error(T: AuditTotals):
         parser_mean = arr[:, 0].mean()
         truth_mean = arr[:, 1].mean()
         err = arr[:, 0] - arr[:, 1]
+        mae = float(np.abs(err).mean())
+        worst_mae = max(worst_mae, mae)
         print(f"  {minute:>7}  {len(vals):>8,}  {parser_mean:>12.2f}  "
-              f"{truth_mean:>11.2f}  {err.mean():>+9.2f}  "
-              f"{np.abs(err).mean():>7.2f}")
+              f"{truth_mean:>11.2f}  {err.mean():>+9.2f}  {mae:>7.2f}")
+
+    print(f"\n  Worst per-minute MAE: {worst_mae:.2f}")
+    if worst_mae < 1.0:
+        print("  [OK] Parser tracks ground truth. The drift regression is fixed.")
+    elif worst_mae < 3.0:
+        print("  [NOTE] Small residual error — likely grid quantization at window")
+        print("         boundaries. Acceptable, but check it does not grow with time.")
+    else:
+        print("  [WARN] Large error remains. If it GROWS with game minute the")
+        print("         reconstruction is still leaking somewhere.")
 
     print(f"\n  Per-structure signed error (parser - truth), nonzero samples only:")
     print(f"  {'Structure':<20}  {'N':>8}  {'mean err':>9}  {'p95 err':>8}")
@@ -388,13 +403,22 @@ def report_ranges(T: AuditTotals):
     print(f"  Longest game time:    {T.max_time:.0f}s "
           f"({T.max_time / 60:.1f} min)")
     over = 100.0 * T.windows_over_720 / max(T.windows, 1)
-    print(f"  Windows with time > 720s (time_norm > 1.0): "
-          f"{T.windows_over_720:,}  ({over:.1f}%)")
+    print(f"  TIME_NORM (obs_spec): {TIME_NORM:.0f}s")
+    print(f"  Windows beyond TIME_NORM: {T.windows_over_720:,}  ({over:.1f}%)")
     if over > 1:
-        print(f"  [NOTE] time is normalized /720 and never clipped, so "
-              f"{over:.1f}% of rows")
-        print(f"         feed time_norm > 1.0 (max "
-              f"{T.max_time / 720.0:.2f}) into the model.")
+        print(f"  [NOTE] {over:.1f}% of rows hit the time clip and are")
+        print(f"         indistinguishable in the time feature.")
+    else:
+        print(f"  [OK] Almost all rows fall inside the time normalization range.")
+
+
+def report_conservation_note():
+    section("NOTE ON SECTION A")
+    print("  Section A compares build COMMANDS to completions. Large gaps are")
+    print("  expected and no longer harmful: state is reconstructed from object")
+    print("  lifetimes, so commands that never produce a building are simply")
+    print("  never counted. The numbers remain useful for understanding how")
+    print("  unreliable command events are as a signal (they still drive LABELS).")
 
 
 def main():
@@ -450,10 +474,11 @@ def main():
     report_cancels(T)
     report_staleness(T)
     report_ranges(T)
+    report_conservation_note()
 
     section("DONE")
-    print("  Section B mean-err growing with game minute = counter drift.")
-    print("  Section A leak % > 0 = commands the parser never resolved.\n")
+    print("  Section B is the regression test: error should be flat and near")
+    print("  zero at every game minute (it used to climb to +31).\n")
 
 
 if __name__ == "__main__":

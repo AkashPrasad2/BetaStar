@@ -12,11 +12,10 @@ Q1. MORPH NAMING. UnitDoneEvent for a Gateway that later becomes a Warpgate
     type_history / _type_class / type is available, plus a concrete Gateway
     timeline.
 
-Q2. STARTING UNITS DOUBLE-COUNTED. GameState.__init__ hardcodes
-    counts["NEXUS"]=1 and counts["PROBE"]=12. If sc2reader ALSO emits
-    UnitBornEvent for those same starting units at t=0, the parser begins every
-    game at 2 Nexuses and 24 Probes. This prints all born events in the first
-    few seconds and the resulting parser counts.
+Q2. STARTING UNITS. The parser used to hardcode counts["NEXUS"]=1 and
+    counts["PROBE"]=12 while sc2reader ALSO emits UnitBornEvent for those same
+    starting units at t=0, so every game began at 2 Nexuses and 24 Probes. State
+    now comes from object lifetimes; this verifies the counts are correct.
 
 Also reports, for one replay: how many units are born per production command
 (the label-undercount ratio), broken down by unit type.
@@ -46,7 +45,7 @@ except ImportError:  # pragma: no cover
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from replay_parser import (  # noqa: E402
-    GameState, STRUCTURE_NAME_MAP, UNIT_NAME_MAP, TRAIN_COMMAND_TO_UNIT,
+    WindowedState, STRUCTURE_NAME_MAP, UNIT_NAME_MAP, TRAIN_COMMAND_TO_UNIT,
 )
 
 DEFAULT_REPLAY_DIR = r"C:\dev\BetaStar\replays\raw"
@@ -140,7 +139,7 @@ def q1_morph_naming(replay, pid):
 
 
 def q2_starting_units(replay, pid):
-    section("Q2. STARTING UNITS — does the parser double-count them?")
+    section("Q2. STARTING UNITS — are they double counted?")
 
     print("  Born/Done events in the first 5 seconds (owned by Protoss player):")
     n = 0
@@ -157,33 +156,27 @@ def q2_starting_units(replay, pid):
     if n > 20:
         print(f"    ... and {n - 20} more")
     if n == 0:
-        print("    NONE — parser's hardcoded starting counts are correct.")
+        print("    NONE")
     print(f"\n  Totals in first 5s: {dict(counts)}")
 
-    # Now replay those events through GameState and show resulting counts.
-    state = GameState()
-    print(f"\n  GameState BEFORE any events (hardcoded __init__):")
-    print(f"    NEXUS={state.counts['NEXUS']}  PROBE={state.counts['PROBE']}")
+    # The parser no longer seeds counts in __init__; state comes from object
+    # lifetimes, so starting units are counted exactly once.
+    state = WindowedState(replay, pid)
+    if not len(state):
+        print("\n  No windows reconstructed.")
+        return
+    first = state.windows[0]
+    nexus = first["structures_done"].get("NEXUS", 0)
+    probes = first["units_done"].get("PROBE", 0)
 
-    for event in replay.events:
-        if event.second > 5:
-            break
-        if isinstance(event, (UnitBornEvent, UnitDoneEvent)) and owned_by(event, pid):
-            state.unit_born_or_done(event.unit.name)
+    print(f"\n  Parser state at window 0 (t=0):")
+    print(f"    NEXUS={nexus}  PROBE={probes}")
+    print(f"  A real game starts with 1 Nexus / 12 Probes.")
 
-    print(f"  GameState AFTER first 5s of born/done events:")
-    print(f"    NEXUS={state.counts['NEXUS']}  PROBE={state.counts['PROBE']}")
-
-    nexus_bad = state.counts["NEXUS"] > 1
-    probe_bad = state.counts["PROBE"] > 12
-    if nexus_bad or probe_bad:
-        print(f"\n  [CONFIRMED] Double-count. Real game starts with 1 Nexus / 12 Probes.")
-        print(f"              Fix: drop the hardcoded values in GameState.__init__,")
-        print(f"              or ignore born events at t=0.")
-        print(f"              Affects struct_NEXUS, unit_PROBE, worker_sat, and every")
-        print(f"              mask check that reads nexus count.")
+    if nexus == 1 and probes == 12:
+        print(f"\n  [OK] Counted exactly once.")
     else:
-        print(f"\n  No double-count detected — hardcoded init is correct.")
+        print(f"\n  [WARN] Unexpected starting counts — investigate.")
 
 
 def q3_label_undercount(replay, pid):

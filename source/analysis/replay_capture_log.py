@@ -1,169 +1,79 @@
 """
 replay_capture_log.py
 
-This script processes a single replay using the same logic as the main replay parser,
-but instead of saving an npz file, it prints out a human-readable log of the events
-captured in each grid window, along with the state of resources at that time.
+Prints a human-readable, per-window log of what the parser extracts from a single
+replay: resources, key state, and the action captured in each 4s grid window.
+Useful for eyeballing whether labels line up with the state the model will see.
 """
 
+import os
 import sys
-import sc2reader
 from pathlib import Path
 
-# Add parent directory to path so we can import replay_parser
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from replay_parser import GameState, GRID_INTERVAL_SECONDS
-from sc2reader.events import (
-    PlayerStatsEvent, UnitBornEvent, UnitDiedEvent, UnitDoneEvent,
-    BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent,
-)
+import sc2reader
 
-def analyze_replay(replay_path: str):
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from replay_parser import (  # noqa: E402
+    ReplayParser, WindowedState, GRID_INTERVAL_SECONDS,
+)
+from actions import ACTIONS  # noqa: E402
+
+DEFAULT_REPLAY_DIR = r"C:\dev\BetaStar\replays\raw"
+
+
+def analyze_replay(replay_path: str, max_windows: int | None = None):
     print(f"Analyzing replay: {replay_path}")
     try:
         replay = sc2reader.load_replay(replay_path, load_level=4)
-    except Exception as e:
-        print(f"Failed to load replay: {e}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Failed to load replay: {exc}")
         return
 
-    protoss_player = None
-    for player in replay.players:
-        if player.play_race == "Protoss":
-            protoss_player = player
-            break
-            
-    if not protoss_player:
+    parser = ReplayParser(debug=False)
+    pid = parser.find_protoss_pid(replay)
+    if pid is None:
         print("No Protoss player found in this replay.")
         return
-        
-    pid = protoss_player.pid
-    
-    EVENT_TO_ACTION = {
-        "TrainProbe":             1,
-        "BuildPylon":             2,
-        "BuildGateway":           3,
-        "BuildCyberneticsCore":   4,
-        "BuildAssimilator":       5,
-        "BuildNexus":             6,
-        "BuildForge":             7,
-        "BuildStargate":          8,
-        "BuildRoboticsFacility":  9,
-        "BuildTwilightCouncil":  10,
-        "BuildPhotonCannon":     11,
-        "BuildFleetBeacon":      12,
-        "BuildTemplarArchive":   13,
-        "TrainZealot":           14,
-        "TrainStalker":          15,
-        "TrainImmortal":         16,
-        "TrainVoidRay":          17,
-        "TrainCarrier":          18,
-        "TrainHighTemplar":      19,
-        "WarpInZealot":          20,
-        "WarpInStalker":         21,
-        "WarpInHighTemplar":     22,
-        "ArchonWarp":            23,
-        "ArchonWarpSelection":   23,
-        "MorphToArchon":         23,
-        "ResearchCharge":        24,
-        "ResearchWarpGate":      25,
-        "UpgradeGroundWeapons1": 26,
-        "UpgradeGroundWeapons2": 26,
-        "UpgradeGroundWeapons3": 26,
-        "UpgradeAirWeapons1":    27,
-        "UpgradeAirWeapons2":    27,
-        "UpgradeAirWeapons3":    27,
-        "UpgradeShields1":       28,
-        "UpgradeShields2":       28,
-        "UpgradesShields3":      28, 
-        "UpgradeShields3":       28,
-        "TrainAdept":            30,
-        "TrainPhoenix":          31,
-        "TrainColossus":         32,
-        "WarpInAdept":           33,
-    }
 
-    # First pass: map commands to grid slots (to handle queueing correctly)
-    grid_actions = {}
-    last_window = 0
-    
-    for event in replay.events:
-        t = event.second
-        if isinstance(event, (BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent)):
-            if event.player.pid == pid:
-                ability = event.ability_name
-                action_id = EVENT_TO_ACTION.get(ability)
-                if action_id is not None:
-                    cmd_window = int(t / GRID_INTERVAL_SECONDS)
-                    slot = cmd_window
-                    while slot in grid_actions:
-                        slot += 1
-                        
-                    grid_actions[slot] = ability
-                    last_window = max(last_window, slot)
+    state = WindowedState(replay, pid)
+    grid_actions, action_last = parser._collect_actions(replay, pid)
+    last_window = max(len(state) - 1, action_last)
+    if max_windows is not None:
+        last_window = min(last_window, max_windows - 1)
 
-    # Second pass: simulate state and print
-    print("\n--- Replay Capture Log ---")
-    print(f"Grid Interval: {GRID_INTERVAL_SECONDS}s")
-    print(f"{'Window':<8} | {'Time (s)':<10} | {'Mins':<6} | {'Gas':<6} | {'Action Captured'}")
-    print("-" * 65)
-    
-    state = GameState()
-    current_grid = 0
-    event_idx = 0
-    num_events = len(replay.events)
-    
-    # Track the last time PlayerStatsEvent fired
-    last_stats_time = 0.0
-    
-    while current_grid <= last_window:
-        window_start_time = current_grid * GRID_INTERVAL_SECONDS
-        
-        # Advance state to the start of this window
-        while event_idx < num_events and replay.events[event_idx].second < window_start_time:
-            event = replay.events[event_idx]
-            
-            if isinstance(event, PlayerStatsEvent):
-                if event.player.pid == pid:
-                    state.update_from_stats(event)
-                    last_stats_time = event.second
-            elif isinstance(event, (UnitBornEvent, UnitDoneEvent)):
-                unit = getattr(event, 'unit', None)
-                if unit:
-                    owner = getattr(unit, "owner", None)
-                    if owner and owner.pid == pid:
-                        state.unit_born_or_done(unit.name)
-            elif isinstance(event, UnitDiedEvent):
-                unit = getattr(event, 'unit', None)
-                if unit:
-                    owner = getattr(unit, "owner", None)
-                    if owner and owner.pid == pid:
-                        state.unit_died(unit.name)
-            elif isinstance(event, (BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent)):
-                if event.player.pid == pid:
-                    state.on_build_command(event.ability_name)
-                    state.on_train_command(event.ability_name)
-                    state.on_upgrade_command(event.ability_name)
-                    
-            event_idx += 1
-            
-        action = grid_actions.get(current_grid, "do_nothing")
-        stats_age = window_start_time - last_stats_time
-        
-        # Flag if resources are particularly stale (e.g., > 5 seconds old)
-        stale_flag = " (Stale)" if stats_age > 5 else ""
-        
-        print(f"{current_grid:<8} | {window_start_time:<10.1f} | {int(state.minerals):<6} | {int(state.vespene):<6} | {action}{stale_flag}")
-        
-        current_grid += 1
+    print(f"\n--- Replay Capture Log ---")
+    print(f"Grid interval: {GRID_INTERVAL_SECONDS}s | fps={state.fps:.1f} | "
+          f"windows={len(state)}")
+    print(f"{'Win':<5} | {'Time':<7} | {'Mins':<5} | {'Gas':<5} | "
+          f"{'Nex':<3} | {'Gate':<4} | {'WG':<3} | {'PendS':<5} | "
+          f"{'Action'}")
+    print("-" * 88)
+
+    for w in range(last_window + 1):
+        idx = min(w, len(state) - 1)
+        win = state.windows[idx]
+        action_id = grid_actions.get(w, 0)
+        name = ACTIONS[action_id] if action_id < len(ACTIONS) else f"?{action_id}"
+        pend_total = sum(win["structures_pending"].values())
+        print(f"{w:<5} | {win['time']:<7.0f} | {int(win['minerals']):<5} | "
+              f"{int(win['vespene']):<5} | "
+              f"{win['structures_done'].get('NEXUS', 0):<3} | "
+              f"{win['structures_done'].get('GATEWAY', 0):<4} | "
+              f"{win['structures_done'].get('WARPGATE', 0):<3} | "
+              f"{pend_total:<5} | {name}")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         analyze_replay(sys.argv[1])
     else:
-        import os
-        replay_dir = r"C:\dev\BetaStar\replays\raw"
-        replays = [f for f in os.listdir(replay_dir) if f.endswith('.SC2Replay')]
-        if replays:
-            analyze_replay(os.path.join(replay_dir, replays[0]))
+        if not Path(DEFAULT_REPLAY_DIR).is_dir():
+            print(f"No replay dir {DEFAULT_REPLAY_DIR}; pass a path instead.")
         else:
-            print(f"No replays found in {replay_dir}")
+            replays = [f for f in os.listdir(DEFAULT_REPLAY_DIR)
+                       if f.endswith(".SC2Replay")]
+            if replays:
+                pick = next((f for f in replays if len(f) > 12), replays[0])
+                analyze_replay(os.path.join(DEFAULT_REPLAY_DIR, pick))
+            else:
+                print(f"No replays found in {DEFAULT_REPLAY_DIR}")

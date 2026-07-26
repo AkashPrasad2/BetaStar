@@ -1,192 +1,136 @@
+"""
+observation_wrapper.py — live (inference-time) observation builder
+==================================================================
+Queries the live SC2 API for raw game state and hands it to
+obs_spec.build_obs_vector(), which is the same function the replay parser uses
+to build training observations. All layout/binning/normalization lives in
+obs_spec so the two paths cannot diverge.
+"""
+
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-# 15 structures
-PROTOSS_STRUCTURES = [
-    UnitTypeId.NEXUS,
-    UnitTypeId.PYLON,
-    UnitTypeId.GATEWAY,
-    UnitTypeId.FORGE,
-    UnitTypeId.TWILIGHTCOUNCIL,
-    UnitTypeId.PHOTONCANNON,
-    UnitTypeId.SHIELDBATTERY,
-    UnitTypeId.TEMPLARARCHIVE,
-    UnitTypeId.ROBOTICSBAY,
-    UnitTypeId.ROBOTICSFACILITY,
-    UnitTypeId.ASSIMILATOR,
-    UnitTypeId.CYBERNETICSCORE,
-    UnitTypeId.STARGATE,
-    UnitTypeId.FLEETBEACON,
-    UnitTypeId.WARPGATE
-]
+import obs_spec
+from obs_spec import (
+    STRUCTURES, UNITS, PENDING_STRUCTURES, OBS_SIZE, build_obs_vector,
+)
 
-# 11 units
-PROTOSS_UNITS = [
-    UnitTypeId.PROBE,
-    UnitTypeId.ZEALOT,
-    UnitTypeId.STALKER,
-    UnitTypeId.HIGHTEMPLAR,
-    UnitTypeId.ARCHON,
-    UnitTypeId.IMMORTAL,
-    UnitTypeId.CARRIER,
-    UnitTypeId.VOIDRAY,
-    UnitTypeId.ADEPT,
-    UnitTypeId.PHOENIX,
-    UnitTypeId.COLOSSUS,
-]
+# Map the canonical names in obs_spec to burnysc2 type ids.
+STRUCTURE_IDS = {
+    "NEXUS":            UnitTypeId.NEXUS,
+    "PYLON":            UnitTypeId.PYLON,
+    "GATEWAY":          UnitTypeId.GATEWAY,
+    "FORGE":            UnitTypeId.FORGE,
+    "TWILIGHTCOUNCIL":  UnitTypeId.TWILIGHTCOUNCIL,
+    "PHOTONCANNON":     UnitTypeId.PHOTONCANNON,
+    "SHIELDBATTERY":    UnitTypeId.SHIELDBATTERY,
+    "TEMPLARARCHIVE":   UnitTypeId.TEMPLARARCHIVE,
+    "ROBOTICSBAY":      UnitTypeId.ROBOTICSBAY,
+    "ROBOTICSFACILITY": UnitTypeId.ROBOTICSFACILITY,
+    "ASSIMILATOR":      UnitTypeId.ASSIMILATOR,
+    "CYBERNETICSCORE":  UnitTypeId.CYBERNETICSCORE,
+    "STARGATE":         UnitTypeId.STARGATE,
+    "FLEETBEACON":      UnitTypeId.FLEETBEACON,
+    "WARPGATE":         UnitTypeId.WARPGATE,
+}
+
+UNIT_IDS = {
+    "PROBE":       UnitTypeId.PROBE,
+    "ZEALOT":      UnitTypeId.ZEALOT,
+    "STALKER":     UnitTypeId.STALKER,
+    "HIGHTEMPLAR": UnitTypeId.HIGHTEMPLAR,
+    "ARCHON":      UnitTypeId.ARCHON,
+    "IMMORTAL":    UnitTypeId.IMMORTAL,
+    "CARRIER":     UnitTypeId.CARRIER,
+    "VOIDRAY":     UnitTypeId.VOIDRAY,
+    "ADEPT":       UnitTypeId.ADEPT,
+    "PHOENIX":     UnitTypeId.PHOENIX,
+    "COLOSSUS":    UnitTypeId.COLOSSUS,
+}
+
+UPGRADE_CHAINS = {
+    "GROUND_WEAPONS": (
+        UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
+        UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2,
+        UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3,
+    ),
+    "SHIELDS": (
+        UpgradeId.PROTOSSSHIELDSLEVEL1,
+        UpgradeId.PROTOSSSHIELDSLEVEL2,
+        UpgradeId.PROTOSSSHIELDSLEVEL3,
+    ),
+    "AIR_WEAPONS": (
+        UpgradeId.PROTOSSAIRWEAPONSLEVEL1,
+        UpgradeId.PROTOSSAIRWEAPONSLEVEL2,
+        UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
+    ),
+}
+
+# Backwards-compatible aliases (older code imported these lists from here).
+PROTOSS_STRUCTURES = [STRUCTURE_IDS[n] for n in STRUCTURES]
+PROTOSS_UNITS = [UNIT_IDS[n] for n in UNITS]
 
 
 class ObservationWrapper:
-    """
-    Converts game state into a flat, normalized vector for neural network input. Runs at every game step.
-
-    Feature layout (70 total):
-        [0]     game time (normalized)
-        [1:5]   minerals one-hot (4 bins)
-        [5:9]   vespene one-hot (4 bins)
-        [9]     supply_used
-        [10]    supply_cap
-        [11]    worker saturation
-        [12:27] completed structure counts   (15)
-        [27:38] completed unit counts        (11)
-        [38:52] in-progress structure counts (14, excl WARPGATE)
-        [52:63] in-progress unit counts      (11)
-        [63]    idle gateway+warpgate count  (normalised /5)
-        [64]    idle stargate count          (normalised /5)
-        [65]    idle robotics facility count (normalised /5)
-        [66]    idle warpgate count          (normalised /5)
-        [67]    ground weapons level         (normalised /3)
-        [68]    shields level                (normalised /3)
-        [69]    air weapons level            (normalised /3)
-    """
+    """Converts live game state into the canonical observation vector."""
 
     def __init__(self):
-        self.observation_size = self.calculate_obs_size()
+        self.observation_size = OBS_SIZE
 
     def calculate_obs_size(self) -> int:
-        # 12 base + 15 structs + 11 units + 14 structs_pending (excl WARPGATE) + 11 units_pending
-        # + 4 idle production buildings + 3 upgrade levels
-        return (12
-                + len(PROTOSS_STRUCTURES)
-                + len(PROTOSS_UNITS)
-                + (len(PROTOSS_STRUCTURES) - 1)  # exclude WARPGATE from pending
-                + len(PROTOSS_UNITS)
-                + 4
-                + 3)
+        return OBS_SIZE
 
     def get_observation(self, bot: BotAI) -> list[float]:
-        obs = []
+        structures_done = {
+            name: bot.structures(tid).ready.amount
+            for name, tid in STRUCTURE_IDS.items()
+        }
+        units_done = {
+            name: bot.units(tid).amount
+            for name, tid in UNIT_IDS.items()
+        }
+        # not_ready == physically under construction, which is the same
+        # semantics the parser reconstructs from UnitInit..UnitDone.
+        structures_pending = {
+            name: bot.structures(STRUCTURE_IDS[name]).not_ready.amount
+            for name in PENDING_STRUCTURES
+        }
+        # already_pending == ordered but not yet delivered, matching the
+        # parser's command->birth matching.
+        units_pending = {
+            name: bot.already_pending(UNIT_IDS[name])
+            for name in UNITS
+        }
+        upgrade_lvls = {
+            key: self._committed_upgrade_level(bot, chain)
+            for key, chain in UPGRADE_CHAINS.items()
+        }
 
-        obs.append(bot.time / 720.0)
+        return build_obs_vector(
+            time_s=bot.time,
+            minerals=bot.minerals,
+            vespene=bot.vespene,
+            supply_used=bot.supply_used,
+            supply_cap=bot.supply_cap,
+            structures_done=structures_done,
+            units_done=units_done,
+            structures_pending=structures_pending,
+            units_pending=units_pending,
+            upgrade_lvls=upgrade_lvls,
+        )
 
-        # Minerals one-hot (4 bins)
-        if bot.minerals < 100:
-            obs.extend([1.0, 0.0, 0.0, 0.0])
-        elif bot.minerals < 300:
-            obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif bot.minerals < 500:
-            obs.extend([0.0, 0.0, 1.0, 0.0])
-        else:
-            obs.extend([0.0, 0.0, 0.0, 1.0])
-
-        # Gas one-hot (4 bins)
-        if bot.vespene < 25:
-            obs.extend([1.0, 0.0, 0.0, 0.0])
-        elif bot.vespene < 100:
-            obs.extend([0.0, 1.0, 0.0, 0.0])
-        elif bot.vespene < 200:
-            obs.extend([0.0, 0.0, 1.0, 0.0])
-        else:
-            obs.extend([0.0, 0.0, 0.0, 1.0])
-
-        obs.append(bot.supply_used / 200.0)
-        obs.append(bot.supply_cap / 200.0)
-
-        worker_supply = bot.units(UnitTypeId.PROBE).amount
-        ideal_workers = bot.townhalls.amount * 22
-        obs.append(worker_supply / max(ideal_workers, 1))
-
-        # Completed structures
-        for structure in PROTOSS_STRUCTURES:
-            obs.append(bot.structures(structure).ready.amount / 10.0)
-
-        # Completed units
-        for unit in PROTOSS_UNITS:
-            obs.append(bot.units(unit).amount / 30.0)
-
-        # In-progress structures (under construction). Exclude warpgates since they are never considered in progress
-        for structure in PROTOSS_STRUCTURES[:-1]:
-            obs.append(bot.structures(structure).not_ready.amount / 10.0)
-
-        # In-progress units (queued in production buildings)
-        for unit in PROTOSS_UNITS:
-            obs.append(bot.already_pending(unit) / 30.0)
-
-        # Idle production buildings (indices 57-60)
-        # Gateway + Warpgate combined pool: idle if building count exceeds
-        # the number of gateway-type units currently in production.
-        gw_count = bot.structures(UnitTypeId.GATEWAY).ready.amount
-        wg_count = bot.structures(UnitTypeId.WARPGATE).ready.amount
-        gw_wg_busy = (bot.already_pending(UnitTypeId.ZEALOT)
-                      + bot.already_pending(UnitTypeId.STALKER)
-                      + bot.already_pending(UnitTypeId.HIGHTEMPLAR)
-                      + bot.already_pending(UnitTypeId.ADEPT))
-        idle_gw_wg = max(0, (gw_count + wg_count) - gw_wg_busy)
-
-        # Stargate: idle if stargate count exceeds air units in production.
-        sg_count = bot.structures(UnitTypeId.STARGATE).ready.amount
-        sg_busy = (bot.already_pending(UnitTypeId.VOIDRAY)
-                   + bot.already_pending(UnitTypeId.CARRIER)
-                   + bot.already_pending(UnitTypeId.PHOENIX))
-        idle_sg = max(0, sg_count - sg_busy)
-
-        # Robotics Facility: idle if count exceeds immortals in production.
-        robo_count = bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.amount
-        robo_busy = (bot.already_pending(UnitTypeId.IMMORTAL)
-                     + bot.already_pending(UnitTypeId.COLOSSUS))
-        idle_robo = max(0, robo_count - robo_busy)
-
-        # Warpgate-specific idle: warpgates whose warp cooldown has expired.
-        # already_pending counts units mid-warp, so idle warpgates are those
-        # not currently warping anything.
-        idle_wg = max(0, wg_count - max(0, gw_wg_busy - gw_count))
-
-        obs.append(idle_gw_wg / 5.0)   # index 63
-        obs.append(idle_sg / 5.0)   # index 64
-        obs.append(idle_robo / 5.0)   # index 65
-        obs.append(idle_wg / 5.0)   # index 66
-
-        # Upgrade levels: committed = completed OR currently being researched.
-        # Matches the pending-or-complete convention used in the replay parser.
-        def committed_upgrade_level(upgrade_ids):
-            lvl = 0
-            for i, uid in enumerate(upgrade_ids, start=1):
-                if uid in bot.state.upgrades:
-                    lvl = i          # level is done, keep checking higher
-                elif bot.already_pending_upgrade(uid) > 0:
-                    lvl = i          # level is in progress
-                    break            # can't have higher levels pending yet
-            return lvl
-
-        gw_lvl = committed_upgrade_level([
-            UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
-            UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2,
-            UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3,
-        ])
-        sh_lvl = committed_upgrade_level([
-            UpgradeId.PROTOSSSHIELDSLEVEL1,
-            UpgradeId.PROTOSSSHIELDSLEVEL2,
-            UpgradeId.PROTOSSSHIELDSLEVEL3,
-        ])
-        aw_lvl = committed_upgrade_level([
-            UpgradeId.PROTOSSAIRWEAPONSLEVEL1,
-            UpgradeId.PROTOSSAIRWEAPONSLEVEL2,
-            UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
-        ])
-
-        obs.append(gw_lvl / 3.0)   # index 67
-        obs.append(sh_lvl / 3.0)   # index 68
-        obs.append(aw_lvl / 3.0)   # index 69
-
-        return obs
+    @staticmethod
+    def _committed_upgrade_level(bot: BotAI, upgrade_ids) -> int:
+        """
+        Highest upgrade level that is complete OR currently researching.
+        Matches the parser's pending-or-complete convention.
+        """
+        level = 0
+        for i, uid in enumerate(upgrade_ids, start=1):
+            if uid in bot.state.upgrades:
+                level = i
+            elif bot.already_pending_upgrade(uid) > 0:
+                level = i
+                break
+        return level
