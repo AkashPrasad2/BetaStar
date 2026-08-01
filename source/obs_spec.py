@@ -61,6 +61,17 @@ PENDING_STRUCTURES: list[str] = STRUCTURES[:-1]
 UPGRADE_KEYS: list[str] = ["GROUND_WEAPONS", "SHIELDS", "AIR_WEAPONS"]
 
 # ---------------------------------------------------------------------------
+# Decision cadence
+# ---------------------------------------------------------------------------
+
+# Seconds of game time between policy decisions. The parser bins replays into
+# windows of this width, and the live bot must query the model on the same
+# schedule -- the transformer's positional encoding assumes one step == one
+# window, so a cadence mismatch stretches the model's sense of time.
+# Shared here so training and inference cannot disagree.
+DECISION_INTERVAL_SECONDS = 4
+
+# ---------------------------------------------------------------------------
 # Normalization constants
 # ---------------------------------------------------------------------------
 

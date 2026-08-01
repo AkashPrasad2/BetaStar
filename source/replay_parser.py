@@ -57,14 +57,15 @@ from obs_spec import (
     STRUCT_IDX, UNIT_IDX, PEND_STRUCT_IDX, PEND_UNIT_IDX,
     IDX_GROUND_WEAPONS_LVL, IDX_SHIELDS_LVL, IDX_AIR_WEAPONS_LVL,
     IDX_IDLE_GW_WG, IDX_IDLE_SG, IDX_IDLE_ROBO, IDX_IDLE_WG,
-    build_obs_vector,
+    DECISION_INTERVAL_SECONDS, build_obs_vector,
 )
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-GRID_INTERVAL_SECONDS = 4
+# Shared with the live bot via obs_spec so the two cadences cannot drift apart.
+GRID_INTERVAL_SECONDS = DECISION_INTERVAL_SECONDS
 
 # A production command is matched to a birth at most this far in the future.
 # Beyond it we assume the order never delivered.
