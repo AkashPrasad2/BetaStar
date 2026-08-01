@@ -41,7 +41,7 @@ MAX_SEQ_LEN = 2048   # positional encoding capacity
 
 # Training hyper-params
 BATCH_SIZE = 16
-EPOCHS = 100
+EPOCHS = 80  # rarely improves beyond this
 LR = 3e-4
 VAL_SPLIT = 0.15
 SEED = 54
@@ -51,7 +51,7 @@ SEED = 54
 MODEL_SELECTION = "accuracy"
 
 # keep the decisions diverse (not applied during training, only inference)
-INFERENCE_TEMPERATURE = 3
+INFERENCE_TEMPERATURE = 1.5
 
 # Cap context window at inference to bound latency
 MAX_CONTEXT = 256
