@@ -202,7 +202,6 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
     has_temparch = done("TEMPLARARCHIVE")
 
     poc_pylon = poc("PYLON")
-    poc_gateway = poc("GATEWAY")
     poc_cybcore = poc("CYBERNETICSCORE")
     poc_stargate = poc("STARGATE")
     poc_robo = poc("ROBOTICSFACILITY")
@@ -210,6 +209,20 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
     poc_temparch = poc("TEMPLARARCHIVE")
     # Warpgate has no pending slot — it is a morph, never "under construction".
     poc_warpgate = done("WARPGATE")
+
+    # Gateway-type production: a Warpgate IS a morphed Gateway and still gates
+    # the same units and the same tech (cybernetics core). Once Warp Gate research
+    # finishes, pros morph every Gateway, so done("GATEWAY") legitimately drops to
+    # zero while they keep producing. Requiring GATEWAY alone demoted thousands of
+    # valid TrainAdept/TrainStalker/TrainZealot labels to do_nothing.
+    #
+    # This was previously hidden by the old command-counter leak: pending GATEWAY
+    # was permanently inflated (340 commands, 14 recorded completions), so
+    # pend("GATEWAY") was almost always non-zero and kept these labels alive by
+    # accident. Fixing the leak removed the crutch and exposed the real
+    # inconsistency -- the strict inference mask already combines GATEWAY+WARPGATE
+    # via the idle_gw_wg feature, so training and inference disagreed.
+    poc_gateway_type = poc("GATEWAY") or done("WARPGATE")
 
     under_cybcore_cap = obs[_IDX["CYBERNETICSCORE"]] < (1.5 / 10.0)
 
@@ -222,8 +235,8 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
         1:  (has_nexus, "needs nexus"),
         2:  (True, ""),
         3:  (poc_pylon, "needs poc_pylon"),
-        4:  (poc_gateway and under_cybcore_cap,
-             "needs poc_gateway and under_cybcore_cap"),
+        4:  (poc_gateway_type and under_cybcore_cap,
+             "needs gateway/warpgate and under_cybcore_cap"),
         5:  (has_nexus, "needs nexus"),
         6:  (True, ""),
         7:  (poc_pylon, "needs poc_pylon"),
@@ -237,13 +250,13 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
              "needs poc_twilight and no_temparch"),
         14: (poc_robo and not has_robobay, "needs poc_robo and no_robobay"),
         15: (poc_cybcore, "needs poc_cybcore"),
-        16: (poc_gateway, "needs poc_gateway"),
-        17: (poc_gateway and poc_cybcore, "needs poc_gateway and poc_cybcore"),
+        16: (poc_gateway_type, "needs gateway or warpgate"),
+        17: (poc_gateway_type and poc_cybcore, "needs gateway/warpgate and poc_cybcore"),
         18: (poc_robo, "needs poc_robo"),
         19: (poc_stargate, "needs poc_stargate"),
         20: (poc_stargate and has_fleet, "needs poc_stargate and has_fleet"),
-        21: (poc_gateway and poc_temparch,
-             "needs poc_gateway and poc_temparch"),
+        21: (poc_gateway_type and poc_temparch,
+             "needs gateway/warpgate and poc_temparch"),
         22: (poc_warpgate, "needs warpgate"),
         23: (poc_warpgate and poc_cybcore, "needs warpgate and poc_cybcore"),
         24: (poc_warpgate and poc_temparch, "needs warpgate and poc_temparch"),
@@ -253,7 +266,7 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
         28: (poc_cybcore, "needs poc_cybcore"),
         29: (has_forge, "needs forge"),
         30: (has_army, "needs army"),
-        31: (poc_gateway and poc_cybcore, "needs poc_gateway and poc_cybcore"),
+        31: (poc_gateway_type and poc_cybcore, "needs gateway/warpgate and poc_cybcore"),
         32: (poc_stargate, "needs poc_stargate"),
         33: (poc_robo and has_robobay, "needs poc_robo and has_robobay"),
         34: (poc_warpgate and poc_cybcore, "needs warpgate and poc_cybcore"),

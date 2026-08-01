@@ -330,6 +330,14 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     poc_temparch = has_temparch | pend_temparch
     poc_forge    = has_forge    | pend_forge
 
+    # Gateway-type production: a Warpgate is a morphed Gateway and gates the same
+    # units/tech. After Warp Gate research pros morph every Gateway, so the plain
+    # GATEWAY count drops to zero while production continues. Must mirror
+    # _action_legal_numpy in replay_parser.py, or labels the parser kept would be
+    # masked out by the loss (and vice versa). The strict inference mask already
+    # combines the two via the idle_gw_wg feature.
+    poc_gateway_type = poc_gateway | has_warpgate
+
     # --- Building caps ---
     under_cybcore_cap = obs[:, IDX_CYBERNETICSCORE] < (1.5 / 10.0)
     no_twilight = ~has_twilight
@@ -366,7 +374,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     mask[:, 3] = poc_pylon
 
     # Action 4: build_cyberneticscore — gateway poc, max 2 allowed
-    mask[:, 4] = poc_gateway & under_cybcore_cap
+    mask[:, 4] = poc_gateway_type & under_cybcore_cap
 
     # Action 5: build_assimilator — needs Nexus
     mask[:, 5] = has_nexus
@@ -402,10 +410,10 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     mask[:, 15] = poc_cybcore
 
     # Action 16: train_zealot — gateway poc (no idle check)
-    mask[:, 16] = poc_gateway
+    mask[:, 16] = poc_gateway_type
 
     # Action 17: train_stalker — gateway + cybcore both poc (no idle check)
-    mask[:, 17] = poc_gateway & poc_cybcore
+    mask[:, 17] = poc_gateway_type & poc_cybcore
 
     # Action 18: train_immortal — robo poc (no idle check)
     mask[:, 18] = poc_robo
@@ -417,7 +425,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     mask[:, 20] = poc_stargate & has_fleet
 
     # Action 21: train_high_templar — gateway + templar archive both poc (no idle)
-    mask[:, 21] = poc_gateway & poc_temparch
+    mask[:, 21] = poc_gateway_type & poc_temparch
 
     # Action 22: warp_in_zealot — warpgate poc (no idle check)
     mask[:, 22] = poc_warpgate
@@ -447,7 +455,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     mask[:, 30] = has_army
 
     # Action 31: train_adept — gateway + cybcore both poc (no idle check)
-    mask[:, 31] = poc_gateway & poc_cybcore
+    mask[:, 31] = poc_gateway_type & poc_cybcore
 
     # Action 32: train_phoenix — stargate poc (no idle check)
     mask[:, 32] = poc_stargate

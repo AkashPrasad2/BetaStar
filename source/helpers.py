@@ -1,6 +1,7 @@
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
+from sc2.ids.buff_id import BuffId
 from sc2.position import Point2
 from enum import Enum
 import random
@@ -77,8 +78,36 @@ def _structures_under_attack(bot: BotAI) -> list:
 # Build helper
 # ---------------------------------------------------------------------------
 
+# Max number of each structure type allowed to be in flight (under construction
+# OR with a worker walking to the site) at any one time.
+#
+# Why this is needed: the model re-decides every few seconds, but the pending-
+# structure feature it sees comes from `not_ready.amount`, which only counts
+# structures that physically EXIST and are being built. Between issuing the build
+# order and the worker arriving at the site, nothing exists yet -- so the
+# observation is identical to "nothing is happening" and the policy samples the
+# same build again. And again. The model also gets no action history in its
+# input, so it cannot know it just ordered one. Result: a stream of pylons until
+# the first one finally breaks ground, then the same for gateways, etc.
+#
+# already_pending() counts worker-en-route builds too, so it is the correct
+# signal for suppressing duplicates at the execution layer. Caps above 1 are
+# allowed where pros genuinely build in parallel.
+MAX_CONCURRENT_BUILDS = {
+    UnitTypeId.PYLON:       2,
+    UnitTypeId.ASSIMILATOR: 2,
+    UnitTypeId.GATEWAY:     2,
+}
+DEFAULT_MAX_CONCURRENT_BUILDS = 1
+
+
 async def build_structure(bot: BotAI, building: UnitTypeId):
     """Helper to systematically build structures depending on the type."""
+
+    # Suppress duplicate builds already in flight (see MAX_CONCURRENT_BUILDS).
+    cap = MAX_CONCURRENT_BUILDS.get(building, DEFAULT_MAX_CONCURRENT_BUILDS)
+    if bot.already_pending(building) >= cap:
+        return
 
     starting_nexus = bot.townhalls.closest_to(
         bot.start_location) if bot.townhalls else None
@@ -395,35 +424,34 @@ async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId, ability_id: AbilityId)
 
 async def chrono_boost_production(bot: BotAI):
     """
-    Automatically chrono boost a production structure if it is currently building something.
-    Priority order: robo facility, then stargate, then warpgate.
-    Uses nexuses with enough energy for a chrono boost.
+    Automatically chrono boost a production structure if it is currently building
+    something. Priority order: robo facility, then stargate, then warpgate.
+
+    Note: has_buff() takes a BuffId, NOT an AbilityId. Passing an AbilityId
+    raises inside burnysc2 (it asserts on the type), which crashed the game the
+    first time any production building was busy. Because Robotics Facility is
+    checked first, the crash typically surfaced at the Stargate in games with no
+    robo. The cast ability is an AbilityId; only the buff lookup takes a BuffId.
     """
+    CHRONO_BUFF = BuffId.CHRONOBOOSTENERGYCOST
+    CHRONO_ABILITY = AbilityId.EFFECT_CHRONOBOOSTENERGYCOST
+    CHRONO_ENERGY_COST = 50
+
+    priority = (
+        UnitTypeId.ROBOTICSFACILITY,
+        UnitTypeId.STARGATE,
+        UnitTypeId.WARPGATE,
+    )
+
     for nexus in bot.townhalls.ready:
-        if nexus.energy < 50:  # Chrono boost costs 50 energy
+        if nexus.energy < CHRONO_ENERGY_COST:
             continue
-        
-        # Check production structures in priority order
-        # 1. Robotics Facility
-        for robo in bot.structures(UnitTypeId.ROBOTICSFACILITY).ready:
-            if robo.is_idle:
-                continue
-            if not robo.has_buff(AbilityId.CHRONOBOOSTENERGYCOST):
-                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, robo)
-                return
-        
-        # 2. Stargate
-        for stargate in bot.structures(UnitTypeId.STARGATE).ready:
-            if stargate.is_idle:
-                continue
-            if not stargate.has_buff(AbilityId.CHRONOBOOSTENERGYCOST):
-                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargate)
-                return
-        
-        # 3. Warpgate
-        for warpgate in bot.structures(UnitTypeId.WARPGATE).ready:
-            if warpgate.is_idle:
-                continue
-            if not warpgate.has_buff(AbilityId.CHRONOBOOSTENERGYCOST):
-                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, warpgate)
+
+        for structure_type in priority:
+            for structure in bot.structures(structure_type).ready:
+                if structure.is_idle:
+                    continue
+                if structure.has_buff(CHRONO_BUFF):
+                    continue
+                nexus(CHRONO_ABILITY, structure)
                 return
