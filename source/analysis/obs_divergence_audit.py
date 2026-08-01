@@ -91,6 +91,38 @@ def owned_by(event, pid: int) -> bool:
     return owner is not None and owner.pid == pid
 
 
+def type_name_at(unit, frame) -> str | None:
+    """
+    Resolve a unit's type AS OF a given frame.
+
+    sc2reader's unit.name returns the unit's FINAL type, so a Gateway that later
+    morphs into a Warpgate reports "WarpGate" for its entire life — including the
+    UnitInit/UnitDone events that fired while it was still a Gateway. Using it
+    directly filed ~343 gateway completions under WARPGATE and made the GATEWAY
+    row look like a 95.9% leak. type_history gives the type per frame, which is
+    the same resolution the parser uses.
+    """
+    history = getattr(unit, "type_history", None)
+    if not history:
+        return getattr(unit, "name", None)
+
+    items = sorted(history.items())
+    resolved = None
+    for hist_frame, unit_type in items:
+        if frame is not None and hist_frame > frame:
+            break
+        resolved = getattr(unit_type, "name", None)
+    if resolved is None:
+        resolved = getattr(items[0][1], "name", None)
+    return resolved
+
+
+def event_type_name(event) -> str | None:
+    """Type name of the event's unit as of the event's own frame."""
+    return type_name_at(getattr(event, "unit", None),
+                        getattr(event, "frame", None))
+
+
 class ReplayAudit:
     """Per-replay measurements, aggregated across the corpus by AuditTotals."""
 
@@ -184,14 +216,14 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
 
         elif HAVE_UNIT_INIT and isinstance(event, UnitInitEvent):
             if owned_by(event, pid):
-                key = STRUCTURE_NAME_MAP.get(event.unit.name)
+                key = STRUCTURE_NAME_MAP.get(event_type_name(event))
                 if key:
                     truth_pending[key] += 1
                     a.struct_inits[key] += 1
 
         elif isinstance(event, (UnitBornEvent, UnitDoneEvent)):
             if owned_by(event, pid):
-                name = event.unit.name
+                name = event_type_name(event)
                 skey = STRUCTURE_NAME_MAP.get(name)
                 ukey = UNIT_NAME_MAP.get(name)
                 if isinstance(event, UnitDoneEvent) and skey:
@@ -202,7 +234,7 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
 
         elif isinstance(event, UnitDiedEvent):
             if owned_by(event, pid):
-                skey = STRUCTURE_NAME_MAP.get(event.unit.name)
+                skey = STRUCTURE_NAME_MAP.get(event_type_name(event))
                 # A building that dies while under construction (cancel or
                 # killed) must stop counting as pending.
                 if skey and truth_pending.get(skey, 0) > 0:
@@ -276,7 +308,11 @@ def report_conservation(T: AuditTotals):
     section("A. COMMAND vs COMPLETION CONSERVATION (drift magnitude)")
     print("  The parser increments pending on a command and decrements on")
     print("  completion. Commands that never complete (cancels, killed builders,")
-    print("  destroyed production) leave the counter permanently inflated.\n")
+    print("  destroyed production) leave the counter permanently inflated.")
+    print("  Types are resolved as of each event's frame via type_history, so a")
+    print("  Gateway that later morphs is counted as GATEWAY while it was one.")
+    print("  WARPGATE shows 0 commands because it is only ever a morph, never")
+    print("  built directly -- its leak% column is meaningless.\n")
 
     print(f"  {'Structure':<20}  {'cmds':>7}  {'inits':>7}  {'dones':>7}  "
           f"{'cmd-done':>9}  {'leak %':>7}")
