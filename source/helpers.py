@@ -37,6 +37,10 @@ ATTACK_TIME_CAP = 1680          # hard attack at 28 min regardless of supply
 RALLY_INTERVAL = 30             # seconds between passive rally commands
 # seconds between re-issuing army orders (avoid spam)
 ARMY_COMMAND_INTERVAL = 5
+# Bounds how often a merge can be re-commanded for the same templar. Defensive:
+# if the game ever rejects a merge, this caps the retry rate instead of letting
+# it fire on every on_step.
+ARCHON_MERGE_RETRY_SECONDS = 5.0
 
 
 class ArmyState(Enum):
@@ -352,23 +356,62 @@ def _issue_attack(bot: BotAI, army, target_pos: Point2, reason: str):
 # ---------------------------------------------------------------------------
 
 async def auto_merge_archons(bot: BotAI):
-    """Only issue merge command if HTs aren't already mergeing (avoid spam)"""
-    hts = bot.units(UnitTypeId.HIGHTEMPLAR)
+    """
+    Merge pairs of High Templars into Archons.
 
-    if hts.amount >= 2:
-        # Check if any HT already has a morph order
-        for ht in hts:
-            # If any HT is already morphing, don't issue new commands
-            if ht.orders:  # Has active orders
-                for order in ht.orders:
-                    if order.ability.id == AbilityId.MORPH_ARCHON:
-                        return  # Already merging, don't interfere
+    MORPH_ARCHON is a NO-TARGET ability issued to a *group* of templars: the raw
+    API expects a single action with ability_id=MORPH_ARCHON carrying the tags of
+    both units. The previous version passed the second templar as a target
+    (`ht1(MORPH_ARCHON, ht2)`), which the game rejects.
 
-        # No merge in progress, start one
-        ht1 = hts[0]
-        ht2 = hts[1]
-        ht1(AbilityId.MORPH_ARCHON, ht2)
-        print(f"[{bot.time:.0f}s] AUTO-MERGE: Initiated archon merge")
+    That rejection was self-sustaining: because the command never landed, no
+    templar ever acquired a MORPH_ARCHON order, so the "already merging" guard
+    never tripped and this ran again on every on_step -- console spam while the
+    templars stood still.
+
+    burnysc2 combines UnitCommands sharing (ability, target, queue) into one raw
+    action, so issuing the no-target ability to both templars in the same step
+    produces exactly the action the game expects.
+    """
+    hts = bot.units(UnitTypeId.HIGHTEMPLAR).ready
+    if hts.amount < 2:
+        return
+
+    now = bot.time
+    recent = bot.archon_merge_issued
+
+    # Expire old entries so tags cannot leak for the rest of the game.
+    for tag in [t for t, when in recent.items()
+                if now - when > ARCHON_MERGE_RETRY_SECONDS]:
+        del recent[tag]
+
+    candidates = []
+    for ht in hts:
+        if ht.tag in recent:
+            continue                      # commanded very recently
+        if any(order.ability.id == AbilityId.MORPH_ARCHON
+               for order in ht.orders):
+            continue                      # already merging
+        candidates.append(ht)
+
+    if len(candidates) < 2:
+        return
+
+    ht1, ht2 = candidates[0], candidates[1]
+
+    # Confirm the game actually offers the merge right now. Without this, any
+    # future rejection would silently become a retry loop again.
+    abilities = await bot.get_available_abilities([ht1, ht2])
+    if not all(AbilityId.MORPH_ARCHON in available for available in abilities):
+        return
+
+    # No target — issued to both templars, combined into one action.
+    ht1(AbilityId.MORPH_ARCHON)
+    ht2(AbilityId.MORPH_ARCHON)
+
+    recent[ht1.tag] = now
+    recent[ht2.tag] = now
+    print(f"[{now:.0f}s] AUTO-MERGE: merging 2 high templars into an archon")
 
 # ---------------------------------------------------------------------------
 # Warp-in helper

@@ -43,11 +43,14 @@ ACTIONS = [
     "warp_in_adept",            # 34
 ]
 
+# Units that attack_enemy_base will command.
+# HIGHTEMPLAR is deliberately excluded, matching ARMY_TYPES in helpers.py: an
+# attack order cancels an in-progress archon merge, so templars are left to
+# auto_merge_archons. Archons themselves are included.
 ARMY = [
     UnitTypeId.ZEALOT,
     UnitTypeId.STALKER,
     UnitTypeId.ADEPT,
-    UnitTypeId.HIGHTEMPLAR,
     UnitTypeId.ARCHON,
     UnitTypeId.IMMORTAL,
     UnitTypeId.COLOSSUS,
@@ -159,16 +162,6 @@ async def execute_action(action_id: int, bot: BotAI):
                 and bot.structures(UnitTypeId.WARPGATE).ready
                 and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready):
             await warp_in_unit(bot, UnitTypeId.HIGHTEMPLAR, AbilityId.WARPGATETRAIN_HIGHTEMPLAR)
-
-    elif action_name == "archon_warp_selection":
-        # FIX: original code called templars.first and templars[1] then issued MORPH_ARCHON
-        # on each separately. The correct API is to select both and issue once, or use
-        # the merge ability. Using .merge() is cleaner and avoids the double-command issue.
-        # Also added a check that we actually have at least 2 idle HT before proceeding.
-        if bot.units(UnitTypeId.HIGHTEMPLAR).idle.amount >= 2:
-            templars = bot.units(UnitTypeId.HIGHTEMPLAR).idle.take(2)
-            # Merge: issue MORPH_ARCHON from the first, targeting the second
-            templars.first(AbilityId.MORPH_ARCHON, templars[1])
 
     elif action_name == "research_charge":
         if (bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready

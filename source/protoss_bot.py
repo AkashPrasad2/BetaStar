@@ -51,6 +51,10 @@ class ProtossBot(BotAI):
         # Production buildings that have had rally points set
         self.rally_tags_set: set = set()
 
+        # High templar tag -> game time a merge was last commanded, so a
+        # rejected merge cannot become a per-step retry loop.
+        self.archon_merge_issued: dict = {}
+
     async def on_step(self, iteration: int):
         # Always-on behaviours
         await self.distribute_workers()
