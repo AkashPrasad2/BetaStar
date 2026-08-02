@@ -104,6 +104,9 @@ MAX_CONCURRENT_BUILDS = {
 }
 DEFAULT_MAX_CONCURRENT_BUILDS = 1
 
+# How far from a townhall a vespene geyser is considered to belong to that base.
+GEYSER_SEARCH_RADIUS = 15
+
 
 async def build_structure(bot: BotAI, building: UnitTypeId):
     """Helper to systematically build structures depending on the type."""
@@ -117,12 +120,23 @@ async def build_structure(bot: BotAI, building: UnitTypeId):
         bot.start_location) if bot.townhalls else None
 
     if building == UnitTypeId.ASSIMILATOR:
-        if bot.can_afford(UnitTypeId.ASSIMILATOR) and starting_nexus:
-            for vespene in bot.vespene_geyser.closer_than(15, starting_nexus):
-                if bot.gas_buildings.filter(lambda u: u.distance_to(vespene) < 1):
-                    continue
+        if not bot.can_afford(UnitTypeId.ASSIMILATOR):
+            return
+        # Check every base, not just the main. This used to search only
+        # `starting_nexus` (the townhall closest to start_location), so once the
+        # two main geysers were taken the loop matched nothing and returned
+        # silently -- expansions never got gas no matter what the model chose.
+        # Nearest-to-start ordering keeps the main saturated first.
+        for townhall in bot.townhalls.sorted(
+                lambda th: th.distance_to(bot.start_location)):
+            for vespene in bot.vespene_geyser.closer_than(
+                    GEYSER_SEARCH_RADIUS, townhall):
+                if bot.gas_buildings.filter(
+                        lambda u, v=vespene: u.distance_to(v) < 1):
+                    continue      # already has an assimilator
                 await bot.build(UnitTypeId.ASSIMILATOR, vespene)
                 return
+        return
 
     elif building == UnitTypeId.PYLON:
         if bot.can_afford(UnitTypeId.PYLON) and starting_nexus:
