@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from pathlib import Path
 
 from action_mask import apply_legal_mask, apply_training_mask
-from obs_spec import OBS_SIZE
+from obs_spec import OBS_SIZE, CONTEXT_WINDOW
 
 # ---------------------------------------------------------------------------
 # Config
@@ -53,8 +53,9 @@ MODEL_SELECTION = "accuracy"
 # keep the decisions diverse (not applied during training, only inference)
 INFERENCE_TEMPERATURE = 1.5
 
-# Cap context window at inference to bound latency
-MAX_CONTEXT = 256
+# Context window the model sees, shared with the live bot via obs_spec so
+# training crops and inference truncation are always the same length.
+MAX_CONTEXT = CONTEXT_WINDOW
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +216,83 @@ def collate_sequences(batch):
 
 
 # ---------------------------------------------------------------------------
+# Context cropping
+# ---------------------------------------------------------------------------
+#
+# The live bot only ever feeds the model its most recent MAX_CONTEXT windows,
+# which restarts the positional encoding at 0 for that trailing slice. Training
+# on whole replays (up to 1181 windows) meant a mid-game observation carried PE
+# position ~400 during training but ~255 at inference, and decorrelated PE from
+# the time feature -- a pairing that appears nowhere in the training data.
+#
+# Cropping training sequences to MAX_CONTEXT makes both regimes identical. It
+# also removes a second mismatch (mean replay length 261 > 256) and cuts the
+# O(T^2) attention cost substantially.
+
+def build_chunk_index(lengths: list[int], max_len: int) -> list[tuple[int, int]]:
+    """
+    Deterministic (sequence_idx, start) pairs tiling every sequence with
+    consecutive non-overlapping chunks, so each timestep is evaluated exactly
+    once. A short final chunk is kept as-is rather than overlapped backwards,
+    which would double-count those timesteps in the metric.
+    """
+    index: list[tuple[int, int]] = []
+    for seq_idx, length in enumerate(lengths):
+        if length <= max_len:
+            index.append((seq_idx, 0))
+            continue
+        for start in range(0, length, max_len):
+            index.append((seq_idx, start))
+    return index
+
+
+class RandomCropDataset(Dataset):
+    """
+    Training view: a fresh random MAX_CONTEXT-length crop each epoch.
+    Doubles as data augmentation, since a given replay yields different slices.
+    """
+
+    def __init__(self, base, max_len: int = MAX_CONTEXT):
+        self.base = base
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        obs, act = self.base[idx]
+        length = obs.shape[0]
+        if length <= self.max_len:
+            return obs, act
+        start = int(torch.randint(0, length - self.max_len + 1, (1,)).item())
+        end = start + self.max_len
+        return obs[start:end], act[start:end]
+
+
+class ChunkedDataset(Dataset):
+    """
+    Validation view: deterministic consecutive chunks covering every timestep
+    exactly once, so the metric is stable across epochs and comparable between
+    runs. Chunks start at PE position 0, matching inference.
+    """
+
+    def __init__(self, base, max_len: int = MAX_CONTEXT):
+        self.base = base
+        self.max_len = max_len
+        lengths = [base[i][0].shape[0] for i in range(len(base))]
+        self.index = build_chunk_index(lengths, max_len)
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, idx):
+        seq_idx, start = self.index[idx]
+        obs, act = self.base[seq_idx]
+        end = min(start + self.max_len, obs.shape[0])
+        return obs[start:end], act[start:end]
+
+
+# ---------------------------------------------------------------------------
 # Training helpers
 # ---------------------------------------------------------------------------
 
@@ -358,11 +436,20 @@ def train():
     )
     print(f"Train replays: {train_size} | Val replays: {val_size}")
 
+    # Crop to the same context length the bot uses at inference (see
+    # RandomCropDataset / ChunkedDataset above).
+    train_view = RandomCropDataset(train_ds, MAX_CONTEXT)
+    val_view = ChunkedDataset(val_ds, MAX_CONTEXT)
+    print(f"Context window: {MAX_CONTEXT} windows "
+          f"({MAX_CONTEXT * 4}s of game time)")
+    print(f"Train items: {len(train_view)} random crops/epoch | "
+          f"Val items: {len(val_view)} deterministic chunks")
+
     train_loader = DataLoader(
-        train_ds, batch_size=BATCH_SIZE, shuffle=True,
+        train_view, batch_size=BATCH_SIZE, shuffle=True,
         collate_fn=collate_sequences, num_workers=0)
     val_loader = DataLoader(
-        val_ds, batch_size=BATCH_SIZE, shuffle=False,
+        val_view, batch_size=BATCH_SIZE, shuffle=False,
         collate_fn=collate_sequences, num_workers=0)
 
     model = ProtossTransformerModel().to(device)
