@@ -456,7 +456,9 @@ def predict_action(
     obs_history: list[list[float]],
     device:      str = "cpu",
     temperature: float = INFERENCE_TEMPERATURE,
-) -> int:
+    return_diagnostics: bool = False,
+    top_k:       int = 5,
+):
     """
     Sequence inference with legal masking + temperature sampling.
 
@@ -465,9 +467,11 @@ def predict_action(
         obs_history: list of flat observation vectors (oldest first)
         device:      torch device string
         temperature: softmax temperature
+        return_diagnostics: also return a dict describing the decision
+        top_k:       how many candidates to report in the diagnostics
 
     Returns:
-        action_id
+        action_id, or (action_id, diagnostics) if return_diagnostics is set.
     """
     x = torch.tensor(obs_history, dtype=torch.float32).unsqueeze(0).to(device)
     # x: (1, T, obs_size)
@@ -481,7 +485,41 @@ def predict_action(
 
     masked_logits = apply_legal_mask(last_logits, last_obs)
     probs = torch.softmax(masked_logits[0] / temperature, dim=-1)
-    return int(torch.multinomial(probs, 1).item())
+    action_id = int(torch.multinomial(probs, 1).item())
+
+    if not return_diagnostics:
+        return action_id
+
+    # Diagnostics: what the model wanted vs what the mask permitted.
+    from actions import ACTIONS
+
+    def name_of(idx: int) -> str:
+        return ACTIONS[idx] if 0 <= idx < len(ACTIONS) else str(idx)
+
+    raw = last_logits[0]
+    masked = masked_logits[0]
+    raw_top1 = int(raw.argmax().item())
+    masked_top1 = int(masked.argmax().item())
+    k = min(top_k, probs.numel())
+    top = torch.topk(probs, k)
+
+    diagnostics = {
+        "n_legal":        int(torch.isfinite(masked).sum().item()),
+        "raw_top1":       raw_top1,
+        "raw_top1_name":  name_of(raw_top1),
+        "masked_top1":    masked_top1,
+        "masked_top1_name": name_of(masked_top1),
+        # True when the model's preferred action was illegal and the mask
+        # forced a different choice.
+        "blocked_top1":   bool(raw_top1 != masked_top1),
+        "chosen_prob":    round(float(probs[action_id]), 4),
+        "greedy_prob":    round(float(probs.max()), 4),
+        "top_named":      [
+            [name_of(int(i)), round(float(p), 4)]
+            for p, i in zip(top.values.tolist(), top.indices.tolist())
+        ],
+    }
+    return action_id, diagnostics
 
 
 if __name__ == "__main__":

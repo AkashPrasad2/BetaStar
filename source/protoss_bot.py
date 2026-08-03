@@ -10,6 +10,7 @@ import math
 from observation_wrapper import ObservationWrapper
 from obs_spec import DECISION_INTERVAL_SECONDS
 from model import load_model, predict_action, MAX_CONTEXT
+from decision_log import DecisionLogger
 from helpers import (
     ArmyState,
     auto_saturate_assimilators,
@@ -22,6 +23,10 @@ import actions
 
 CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
 DEVICE = "cpu"
+
+# Per-decision introspection log. Set to False to turn it off.
+ENABLE_DECISION_LOG = True
+LOG_DIR = r"C:\dev\BetaStar\logs"
 
 
 class ProtossBot(BotAI):
@@ -55,6 +60,10 @@ class ProtossBot(BotAI):
         # rejected merge cannot become a per-step retry loop.
         self.archon_merge_issued: dict = {}
 
+        # Per-decision introspection (None when disabled)
+        self.decision_log = (
+            DecisionLogger(LOG_DIR) if ENABLE_DECISION_LOG else None)
+
     async def on_step(self, iteration: int):
         # Always-on behaviours
         await self.distribute_workers()
@@ -79,6 +88,10 @@ class ProtossBot(BotAI):
             self.next_decision_time = (
                 slots_elapsed + 1) * DECISION_INTERVAL_SECONDS
 
+        # Settle the previous decision's outcome now that the game has advanced.
+        if self.decision_log is not None:
+            self.decision_log.resolve_previous(self)
+
         obs = self.obs_wrapper.get_observation(self)
         self.obs_history.append(obs)
 
@@ -86,11 +99,16 @@ class ProtossBot(BotAI):
         if len(self.obs_history) > MAX_CONTEXT:
             self.obs_history = self.obs_history[-MAX_CONTEXT:]
 
-        action_id = predict_action(
-            self.model,
-            self.obs_history,
-            device=DEVICE,
-        )
+        if self.decision_log is not None:
+            action_id, diagnostics = predict_action(
+                self.model, self.obs_history, device=DEVICE,
+                return_diagnostics=True,
+            )
+            self.decision_log.log_decision(
+                self, iteration, obs, action_id, diagnostics)
+        else:
+            action_id = predict_action(
+                self.model, self.obs_history, device=DEVICE)
 
         print(
             f"[{self.time:.1f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
@@ -99,7 +117,8 @@ class ProtossBot(BotAI):
         await actions.execute_action(action_id, self)
 
     async def on_end(self, game_result):
-        pass
+        if self.decision_log is not None:
+            self.decision_log.finish(self, game_result)
 
 
 run_game(
