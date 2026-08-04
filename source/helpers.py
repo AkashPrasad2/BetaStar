@@ -99,8 +99,8 @@ def _structures_under_attack(bot: BotAI) -> list:
 # allowed where pros genuinely build in parallel.
 MAX_CONCURRENT_BUILDS = {
     UnitTypeId.PYLON:       2,
-    UnitTypeId.ASSIMILATOR: 2,
-    UnitTypeId.GATEWAY:     2,
+    UnitTypeId.GATEWAY:     6,
+    UnitTypeId.STARGATE:    4
 }
 DEFAULT_MAX_CONCURRENT_BUILDS = 1
 
