@@ -71,16 +71,6 @@ UPGRADE_KEYS: list[str] = ["GROUND_WEAPONS", "SHIELDS", "AIR_WEAPONS"]
 # Shared here so training and inference cannot disagree.
 DECISION_INTERVAL_SECONDS = 4
 
-# Number of decision windows the model sees at once.
-#
-# The live bot truncates its observation history to this length, which resets the
-# positional encoding to 0 for the trailing window. Training must therefore also
-# feed crops of this length, otherwise a mid-game observation gets PE position
-# ~255 at inference but its true absolute index (up to 1181) during training --
-# and PE position and the time feature, perfectly correlated in training, would
-# decorrelate at inference. Shared here so the two cannot drift apart.
-CONTEXT_WINDOW = 256
-
 # ---------------------------------------------------------------------------
 # Normalization constants
 # ---------------------------------------------------------------------------
