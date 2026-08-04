@@ -61,6 +61,52 @@ PENDING_STRUCTURES: list[str] = STRUCTURES[:-1]
 UPGRADE_KEYS: list[str] = ["GROUND_WEAPONS", "SHIELDS", "AIR_WEAPONS"]
 
 # ---------------------------------------------------------------------------
+# Action space — canonical names, index == action id
+# ---------------------------------------------------------------------------
+# Lives here (a dependency-free module) so the replay parser and analysis
+# scripts can name actions without importing burnysc2, and so there is only one
+# copy of this list. actions.py imports it as ACTIONS for execution dispatch.
+ACTION_NAMES: list[str] = [
+    "do_nothing",               # 0
+    "train_probe",              # 1
+    "build_pylon",              # 2
+    "build_gateway",            # 3
+    "build_cyberneticscore",    # 4
+    "build_assimilator",        # 5
+    "build_nexus",              # 6
+    "build_forge",              # 7
+    "build_stargate",           # 8
+    "build_robotics_facility",  # 9
+    "build_twilight_council",   # 10
+    "build_photon_cannon",      # 11
+    "build_fleet_beacon",       # 12
+    "build_templar_archive",    # 13
+    "build_robotics_bay",       # 14
+    "build_shield_battery",     # 15
+    "train_zealot",             # 16
+    "train_stalker",            # 17
+    "train_immortal",           # 18
+    "train_voidray",            # 19
+    "train_carrier",            # 20
+    "train_high_templar",       # 21
+    "warp_in_zealot",           # 22
+    "warp_in_stalker",          # 23
+    "warp_in_high_templar",     # 24
+    "research_charge",          # 25
+    "research_warp_gate",       # 26
+    "upgrade_ground_weapons",   # 27
+    "upgrade_air_weapons",      # 28
+    "upgrade_shields",          # 29
+    "attack_enemy_base",        # 30
+    "train_adept",              # 31
+    "train_phoenix",            # 32
+    "train_colossus",           # 33
+    "warp_in_adept",            # 34
+]
+
+NUM_ACTIONS = len(ACTION_NAMES)
+
+# ---------------------------------------------------------------------------
 # Decision cadence
 # ---------------------------------------------------------------------------
 

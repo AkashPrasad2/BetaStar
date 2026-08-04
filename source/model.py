@@ -53,8 +53,22 @@ MODEL_SELECTION = "accuracy"
 # keep the decisions diverse (not applied during training, only inference)
 INFERENCE_TEMPERATURE = 1.5
 
-# Cap context window at inference to bound latency
-MAX_CONTEXT = 256
+# Cap context window at inference to bound latency.
+#
+# Training feeds whole replays, so a window at index k gets positional-encoding
+# position k. Inference matches that exactly until the history exceeds
+# MAX_CONTEXT, after which truncation pins the current window to position
+# MAX_CONTEXT-1 and PE decorrelates from game time -- a pairing that appears
+# nowhere in training.
+#
+# At 256 that boundary hit at 17 minutes, inside the decisive part of most games.
+# 512 windows = 2048s = 34 minutes, which covers essentially every game in the
+# corpus. It is also the exact point where the O(T^2) attention cost equals all
+# the linear (projection + FFN) cost for this model size, so it stays cheap:
+# ~1.1 GFLOP per decision against a 4s budget.
+#
+# Must stay <= MAX_SEQ_LEN (positional encoding capacity).
+MAX_CONTEXT = 512
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ import torch
 import obs_spec
 from obs_spec import STRUCT_IDX, UNIT_IDX, PEND_STRUCT_IDX, PEND_UNIT_IDX
 
-NUM_ACTIONS = 35  # all indices 0-34 are active actions (see ACTIONS in actions.py)
+NUM_ACTIONS = obs_spec.NUM_ACTIONS  # all indices are active actions
 
 # ---------------------------------------------------------------------------
 # Feature indices — imported from obs_spec (the single source of truth for the

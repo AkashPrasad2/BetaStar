@@ -34,8 +34,9 @@ Observations are emitted through obs_spec.build_obs_vector(), the same function
 the live bot uses at inference.
 """
 
-from collections import defaultdict
+from collections import defaultdict, Counter
 import os
+import time
 
 import numpy as np
 import sc2reader
@@ -57,8 +58,9 @@ from obs_spec import (
     STRUCT_IDX, UNIT_IDX, PEND_STRUCT_IDX, PEND_UNIT_IDX,
     IDX_GROUND_WEAPONS_LVL, IDX_SHIELDS_LVL, IDX_AIR_WEAPONS_LVL,
     IDX_IDLE_GW_WG, IDX_IDLE_SG, IDX_IDLE_ROBO, IDX_IDLE_WG,
-    DECISION_INTERVAL_SECONDS, build_obs_vector,
+    DECISION_INTERVAL_SECONDS, ACTION_NAMES, build_obs_vector,
 )
+from parse_log import ParseLogger
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -72,6 +74,9 @@ GRID_INTERVAL_SECONDS = DECISION_INTERVAL_SECONDS
 MAX_PRODUCTION_LAG_SECONDS = 180.0
 
 MIN_REPLAY_BUILD = 73286   # 4.0.0 — older replays are unreadable here
+
+# Where parse logs are written (matches LOG_DIR in protoss_bot.py).
+LOG_DIR = r"C:\dev\BetaStar\logs"
 
 # ---------------------------------------------------------------------------
 # sc2reader unit name -> canonical obs_spec name
@@ -595,15 +600,25 @@ class ReplayParser:
         replay_folder=r"C:\dev\BetaStar\replays\raw",
         output_file=r"C:\dev\BetaStar\replays\parsed\dataset.npz",
         debug=True,
+        log_dir=LOG_DIR,
     ):
         self.replay_folder = replay_folder
         self.output_file = output_file
         self.debug = debug
+        self.log_dir = log_dir
 
         self.unmapped_abilities = defaultdict(int)
         self.mapped_actions = defaultdict(int)
         self.conflicts_dropped = 0
         self.max_queue_lag_seen = 0
+
+        # Per-replay accumulators, reset at the start of each parse_replay.
+        # Conflicts are keyed by (action_id, action_name, reason) so the log can
+        # answer "which actions are losing labels, and why" -- previously only a
+        # single global total existed, and the detail was buried in stdout spam.
+        self._replay_conflicts: Counter = Counter()
+        self._replay_actions: Counter = Counter()
+        self._replay_max_lag = 0
 
         self.EVENT_TO_ACTION = {
             "TrainProbe":             1,
@@ -689,6 +704,8 @@ class ReplayParser:
             lag = slot - cmd_window
             if lag > self.max_queue_lag_seen:
                 self.max_queue_lag_seen = lag
+            if lag > self._replay_max_lag:
+                self._replay_max_lag = lag
 
             grid_actions[slot] = action_id
             last_window = max(last_window, slot)
@@ -699,6 +716,10 @@ class ReplayParser:
     # -- main entry point --------------------------------------------------
 
     def parse_replay(self, replay, min_length: int = 10) -> np.ndarray | None:
+        self._replay_conflicts = Counter()
+        self._replay_actions = Counter()
+        self._replay_max_lag = 0
+
         if getattr(replay, "build", 0) < MIN_REPLAY_BUILD:
             if self.debug:
                 print(f"    [SKIP] build {getattr(replay, 'build', '?')} "
@@ -722,10 +743,13 @@ class ReplayParser:
                 is_legal, reason = _action_legal_numpy(obs, action_id)
                 if not is_legal:
                     self.conflicts_dropped += 1
+                    name = self._action_names.get(action_id, "unknown")
+                    self._replay_conflicts[(action_id, name, reason)] += 1
                     if self.debug:
                         self._print_conflict(window, action_id, reason, obs)
                     action_id = 0
 
+            self._replay_actions[action_id] += 1
             rows.append(obs + [float(action_id)])
 
         if len(rows) < min_length:
@@ -794,44 +818,77 @@ class ReplayParser:
               f"state from object lifetimes | UnitInit available: "
               f"{_HAVE_UNIT_INIT}\n")
 
+        log = ParseLogger(self.log_dir, meta={
+            "grid_interval_seconds": GRID_INTERVAL_SECONDS,
+            "obs_size": OBS_SIZE,
+            "num_actions": len(ACTION_NAMES),
+            "replay_folder": self.replay_folder,
+            "output_file": self.output_file,
+            "sc2reader": getattr(sc2reader, "__version__", "unknown"),
+            "unit_init_available": _HAVE_UNIT_INIT,
+            "min_replay_build": MIN_REPLAY_BUILD,
+            "time_norm": obs_spec.TIME_NORM,
+            "actions": ACTION_NAMES,
+            "feature_names": obs_spec.feature_names(),
+        })
+
         for fname in replay_files:
             path = os.path.join(self.replay_folder, fname)
+            t_start = time.time()
             try:
                 replay = sc2reader.load_replay(path, load_level=4)
 
                 races = {p.play_race for p in replay.players}
                 if "Protoss" not in races:
                     skipped += 1
+                    log.replay_skipped(fname, "no protoss player")
                     continue
 
                 if not all(p.is_human for p in replay.players):
                     skipped += 1
                     bot_replays.append(fname)
+                    log.replay_skipped(fname, "contains a computer player")
                     continue
 
                 seq = self.parse_replay(replay)
+                build = getattr(replay, "build", 0)
                 if seq is None:
                     skipped += 1
-                    build = getattr(replay, "build", 0)
                     if 0 < build < MIN_REPLAY_BUILD:
                         print(f"  {fname}: skipped (old patch {build})")
+                        log.replay_skipped(fname, "replay build too old",
+                                           build=build)
                     else:
                         print(f"  {fname}: too short, skipped")
+                        log.replay_skipped(fname, "too short", build=build)
                     continue
 
                 actions = seq[:, OBS_SIZE].astype(int)
                 n_idle = int((actions == 0).sum())
                 pct_idle = 100.0 * n_idle / len(actions)
                 sequences.append(seq)
+                log.replay_parsed(
+                    fname,
+                    build=build,
+                    windows=len(seq),
+                    action_counts=self._replay_actions,
+                    conflicts=self._replay_conflicts,
+                    max_lag=self._replay_max_lag,
+                    seconds=time.time() - t_start,
+                )
                 print(f"  {fname}: {len(seq)} windows  "
                       f"(do_nothing: {n_idle}/{len(seq)} = {pct_idle:.0f}%)")
 
             except Exception as exc:  # noqa: BLE001 - report and continue
                 print(f"  FAILED {fname}: {exc}")
+                log.replay_failed(fname, f"{type(exc).__name__}: {exc}")
                 failed += 1
 
         if not sequences:
             print("No training data collected.")
+            log.finish(action_names=ACTION_NAMES,
+                       unmapped=dict(self.unmapped_abilities),
+                       grid_seconds=GRID_INTERVAL_SECONDS)
             return
 
         seq_array = np.empty(len(sequences), dtype=object)
@@ -857,6 +914,18 @@ class ReplayParser:
             print(f"Bot replays skipped: {bot_replays}")
         print(f"\nSaved to: {self.output_file}")
         self.print_statistics()
+
+        log.finish(
+            action_names=ACTION_NAMES,
+            unmapped=dict(self.unmapped_abilities),
+            dataset_path=self.output_file,
+            grid_seconds=GRID_INTERVAL_SECONDS,
+            extra={
+                "Max queue lag": f"{self.max_queue_lag_seen} window(s) "
+                                 f"({self.max_queue_lag_seen * GRID_INTERVAL_SECONDS}s)",
+                "Bot replays": len(bot_replays),
+            },
+        )
 
 
 if __name__ == "__main__":

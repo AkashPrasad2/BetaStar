@@ -4,49 +4,12 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
 from helpers import build_structure, warp_in_unit
 
-# output layer will be an array of numbers corresponding to the differnet actions the model can take
-ACTIONS = [
-    "do_nothing",               # 0
-    "train_probe",              # 1
-    "build_pylon",              # 2
-    "build_gateway",            # 3
-    "build_cyberneticscore",    # 4
-    "build_assimilator",        # 5
-    "build_nexus",              # 6
-    "build_forge",              # 7
-    "build_stargate",           # 8
-    "build_robotics_facility",  # 9
-    "build_twilight_council",   # 10
-    "build_photon_cannon",      # 11
-    "build_fleet_beacon",       # 12
-    "build_templar_archive",    # 13
-    "build_robotics_bay",       # 14
-    "build_shield_battery",     # 15
-    "train_zealot",             # 16
-    "train_stalker",            # 17
-    "train_immortal",           # 18
-    "train_voidray",            # 19
-    "train_carrier",            # 20
-    "train_high_templar",       # 21
-    "warp_in_zealot",           # 22
-    "warp_in_stalker",          # 23
-    "warp_in_high_templar",     # 24
-    "research_charge",          # 25
-    "research_warp_gate",       # 26
-    "upgrade_ground_weapons",   # 27
-    "upgrade_air_weapons",      # 28
-    "upgrade_shields",          # 29
-    "attack_enemy_base",        # 30
-    "train_adept",              # 31
-    "train_phoenix",            # 32
-    "train_colossus",           # 33
-    "warp_in_adept",            # 34
-]
+# Action names are defined once in obs_spec (index == action id) and imported
+# here so execution dispatch, the parser, and the analysis scripts can never
+# disagree about which id means what.
+from obs_spec import ACTION_NAMES as ACTIONS
 
-# Units that attack_enemy_base will command.
-# HIGHTEMPLAR is deliberately excluded, matching ARMY_TYPES in helpers.py: an
-# attack order cancels an in-progress archon merge, so templars are left to
-# auto_merge_archons. Archons themselves are included.
+
 ARMY = [
     UnitTypeId.ZEALOT,
     UnitTypeId.STALKER,
