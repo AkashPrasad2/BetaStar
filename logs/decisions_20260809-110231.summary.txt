@@ -1,0 +1,28 @@
+
+====================================================================
+  DECISION LOG SUMMARY
+====================================================================
+  Result: Result.Defeat
+  Decisions: 217
+  do_nothing: 79 (36.4%)
+  mask blocked the model's top choice: 59 (27.2%)
+
+  action                      chosen   no-op  suppr  no-op %
+  ----------------------------------------------------------
+  do_nothing                      79       0      0       0%
+  train_probe                     35       6      0      17%
+  build_photon_cannon             18       3      7      27%
+  build_gateway                   18       8      0      44%
+  upgrade_ground_weapons          16      11      0      69%  <-- often dropped
+  build_pylon                     14       8      0      57%  <-- often dropped
+  build_nexus                     13       2      7      33%
+  build_assimilator               11       5      1      50%  <-- often dropped
+  build_forge                      7       3      1      50%  <-- often dropped
+  train_zealot                     3       0      0       0%
+  upgrade_shields                  3       1      0      33%
+
+  no-op = chosen by the model but had no effect on the game.
+  A high rate means the execution layer is dropping it (a bug),
+  or it was unaffordable. 'suppr' is the deliberate
+  MAX_CONCURRENT_BUILDS guard and is expected.
+====================================================================

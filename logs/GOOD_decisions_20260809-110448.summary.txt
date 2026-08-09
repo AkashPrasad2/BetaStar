@@ -1,0 +1,50 @@
+
+====================================================================
+  DECISION LOG SUMMARY
+====================================================================
+  Result: Result.Defeat
+  Decisions: 373
+  do_nothing: 97 (26.0%)
+  mask blocked the model's top choice: 16 (4.3%)
+
+  action                      chosen   no-op  suppr  no-op %
+  ----------------------------------------------------------
+  do_nothing                      97       0      0       0%
+  train_probe                     24      10      0      42%
+  train_colossus                  21      16      0      76%  <-- often dropped
+  build_assimilator               20       3      6      21%
+  warp_in_stalker                 18       8      0      44%
+  build_pylon                     17       9      0      53%  <-- often dropped
+  build_shield_battery            17       4      3      29%
+  warp_in_high_templar            14       7      0      50%  <-- often dropped
+  build_gateway                   13       3      0      23%
+  warp_in_zealot                  13       7      0      54%  <-- often dropped
+  build_nexus                     12       2      4      25%
+  train_carrier                   12       6      0      50%  <-- often dropped
+  train_adept                     10       7      0      70%  <-- often dropped
+  build_stargate                  10       6      0      60%  <-- often dropped
+  train_immortal                   9       6      0      67%  <-- often dropped
+  build_photon_cannon              7       1      1      17%
+  build_robotics_facility          6       4      0      67%  <-- often dropped
+  train_phoenix                    6       2      0      33%
+  train_stalker                    5       4      0      80%  <-- often dropped
+  upgrade_air_weapons              5       0      0       0%
+  train_zealot                     4       1      0      25%
+  build_forge                      4       3      0      75%
+  build_fleet_beacon               4       3      0      75%
+  train_voidray                    4       1      0      25%
+  upgrade_shields                  4       2      0      50%
+  research_warp_gate               3       0      0       0%
+  build_robotics_bay               3       0      2       0%
+  upgrade_ground_weapons           3       0      0       0%
+  build_twilight_council           2       0      1       0%
+  train_high_templar               2       2      0     100%
+  research_charge                  2       1      0      50%
+  build_cyberneticscore            1       0      0       0%
+  build_templar_archive            1       0      0       0%
+
+  no-op = chosen by the model but had no effect on the game.
+  A high rate means the execution layer is dropping it (a bug),
+  or it was unaffordable. 'suppr' is the deliberate
+  MAX_CONCURRENT_BUILDS guard and is expected.
+====================================================================
