@@ -30,10 +30,23 @@ PRODUCTION_BUILDINGS = [
 ]
 
 # trigger defense if any completed structure drops below this HP %
-DEFEND_HEALTH_THRESHOLD = 0.85
+# --- Threat detection -------------------------------------------------------
+# Protoss structure HEALTH never regenerates (only shields do). The old trigger
+# was `health_percentage < 0.85`, which is therefore a PERMANENT condition: one
+# scratch on one building and the bot defends for the rest of the game. Worse,
+# the ATTACK branch of _transition_state falls through to the same check, so the
+# bot also stopped ever attacking. Threat is now derived from things that
+# actually stop being true:
+#   * a structure LOST health/shields since the last step (recent damage), or
+#   * a visible enemy combat unit is near one of our structures.
+DEFEND_DAMAGE_MEMORY = 12.0   # seconds a damage event keeps us in DEFEND
+DEFEND_ENEMY_RADIUS = 25.0    # enemy within this of a structure = threat
+MIN_STATE_DWELL = 6.0         # min seconds in DEFEND/ATTACK before switching out
+DAMAGE_EPSILON = 1.0          # ignore sub-unit jitter in hp+shield readings
+
 ATTACK_SUPPLY_THRESHOLD = 70    # army supply needed to initiate an attack
-RETREAT_SUPPLY_THRESHOLD = 30   # army supply floor — retreat below this
 ATTACK_TIME_CAP = 1680          # hard attack at 28 min regardless of supply
+# No retreat threshold: ATTACK is a one-way commitment (see _transition_state).
 RALLY_INTERVAL = 30             # seconds between passive rally commands
 # seconds between re-issuing army orders (avoid spam)
 ARMY_COMMAND_INTERVAL = 5
@@ -65,17 +78,79 @@ def get_army_supply(bot: BotAI) -> int:
     return sum(bot.units(ut).amount * cost for ut, cost in army_types_supply)
 
 
-def _structures_under_attack(bot: BotAI) -> list:
+def _ensure_threat_state(bot: BotAI):
+    """Lazily create the threat-tracking attributes (safe if __init__ predates them)."""
+    if not hasattr(bot, "structure_hp_snapshot"):
+        bot.structure_hp_snapshot = {}       # tag -> (hp+shield, position)
+        bot.last_damage_time = -1.0e9
+        bot.last_damage_pos = None
+        bot.threat_position = None
+    if not hasattr(bot, "army_state_since"):
+        bot.army_state_since = 0.0
+
+
+def _detect_damage(bot: BotAI):
     """
-    Returns completed structures whose health has dropped below the defend
-    threshold. Excludes structures still under construction — their health
-    naturally starts at 1% and climbs to 100%, which would otherwise
-    trigger a false defense response on every new build.
+    Compare this step's structure hp+shield against the previous step and record
+    the position of the worst loss. A structure that disappeared entirely counts
+    as damage at its last known position.
     """
-    return [
-        s for s in bot.structures
-        if s.is_ready and s.health_percentage < DEFEND_HEALTH_THRESHOLD
-    ]
+    _ensure_threat_state(bot)
+    snapshot = bot.structure_hp_snapshot
+    worst_pos = None
+    worst_loss = DAMAGE_EPSILON
+
+    seen = set()
+    for structure in bot.structures:
+        seen.add(structure.tag)
+        current = structure.health + structure.shield
+        previous = snapshot.get(structure.tag)
+        snapshot[structure.tag] = (current, structure.position)
+        if previous is None:
+            continue
+        loss = previous[0] - current
+        if loss > worst_loss:
+            worst_loss = loss
+            worst_pos = structure.position
+
+    # Structures that vanished were destroyed -- treat as damage where they stood.
+    for tag in [t for t in snapshot if t not in seen]:
+        _, position = snapshot.pop(tag)
+        if worst_pos is None:
+            worst_pos = position
+
+    if worst_pos is not None:
+        bot.last_damage_time = bot.time
+        bot.last_damage_pos = worst_pos
+
+
+def _current_threat(bot: BotAI) -> tuple[bool, object | None]:
+    """
+    (threatened, position_to_defend).
+
+    Both conditions are transient, so DEFEND always ends: enemies leave or die,
+    and the damage memory expires.
+    """
+    _ensure_threat_state(bot)
+
+    structures = bot.structures.ready
+    if structures:
+        for enemy in bot.enemy_units:
+            if getattr(enemy, "is_structure", False):
+                continue
+            if getattr(enemy, "is_hallucination", False):
+                continue
+            for structure in structures:
+                if enemy.position.distance_to(structure.position) < DEFEND_ENEMY_RADIUS:
+                    return True, enemy.position
+
+    if bot.time - bot.last_damage_time < DEFEND_DAMAGE_MEMORY:
+        fallback = bot.last_damage_pos
+        if fallback is None and bot.townhalls:
+            fallback = bot.townhalls.center
+        return True, fallback
+
+    return False, None
 
 
 # ---------------------------------------------------------------------------
@@ -218,10 +293,12 @@ async def manage_army(bot: BotAI):
     first, then issues exactly one set of orders based on the current state.
 
     State machine:
-        RALLY  →  ATTACK  if army supply >= ATTACK_SUPPLY_THRESHOLD or time cap
-        RALLY  →  DEFEND  if a completed structure is taking health damage
-        DEFEND →  RALLY   if the threat clears (no more damaged structures)
-        ATTACK →  RALLY   if army supply drops below RETREAT_SUPPLY_THRESHOLD
+        RALLY  →  DEFEND  if a base threat is detected (recent damage, or an
+                          enemy near our structures)
+        DEFEND →  RALLY   once the threat is gone and MIN_STATE_DWELL passed
+        RALLY  →  ATTACK  at ATTACK_SUPPLY_THRESHOLD army supply, or the time cap
+        ATTACK →  (none)  absorbing: we push until everything is dead or we are.
+                          Base threats do not recall the army.
     """
     army = bot.units.of_type(ARMY_TYPES)
 
@@ -245,39 +322,54 @@ async def manage_army(bot: BotAI):
         _do_attack(bot, army)
 
 
+def _set_army_state(bot: BotAI, new_state: "ArmyState", reason: str):
+    """
+    Set army to desired state and log
+    """
+    if bot.army_state == new_state:
+        return
+    print(f"[{bot.time:.0f}s] ARMY: {bot.army_state.value} -> "
+          f"{new_state.value} ({reason})")
+    bot.army_state = new_state
+    bot.army_state_since = bot.time
+
+
 def _transition_state(bot: BotAI):
     """
     Evaluate and apply state transitions. Called every frame so reactions
     are immediate even if unit commands are throttled.
     """
-    supply = get_army_supply(bot)
+    _ensure_threat_state(bot)
+    _detect_damage(bot)
 
-    # never retreat :)
-    # if bot.army_state == ArmyState.ATTACK:
-    #     if supply < RETREAT_SUPPLY_THRESHOLD:
-    #         print(
-    #             f"[{bot.time:.0f}s] ARMY: Supply dropped to {supply}, retreating to RALLY.")
-    #         bot.army_state = ArmyState.RALLY
-    #     return
+    supply = get_army_supply(bot)
+    threatened, threat_pos = _current_threat(bot)
+    bot.threat_position = threat_pos
+    dwell = bot.time - bot.army_state_since
 
     if bot.army_state == ArmyState.DEFEND:
-        if not _structures_under_attack(bot):
-            print(f"[{bot.time:.0f}s] ARMY: Threat cleared, returning to RALLY.")
-            bot.army_state = ArmyState.RALLY
+        # Leaving DEFEND requires the threat to be gone AND a minimum dwell, so
+        # the army does not ping-pong on a single stray scout.
+        if not threatened and dwell >= MIN_STATE_DWELL:
+            _set_army_state(bot, ArmyState.RALLY, "threat cleared")
         return
 
-    # RALLY: check for transitions to DEFEND or ATTACK (DEFEND takes priority)
-    under_attack = _structures_under_attack(bot)
-    if under_attack:
-        target = min(under_attack, key=lambda s: s.health_percentage)
-        print(f"[{bot.time:.0f}s] ARMY: {target.name} under attack "
-              f"({target.health_percentage:.0%} HP) — switching to DEFEND.")
-        bot.army_state = ArmyState.DEFEND
+    if bot.army_state == ArmyState.ATTACK:
+        # ATTACK is absorbing: once committed we push until everything is dead
+        # or the army is. No retreat, and base threats do NOT pull the army
+        # home -- turning around mid-push loses the army for nothing and was
+        # what made the bot look like it was retreating.
         return
 
-    if supply >= ATTACK_SUPPLY_THRESHOLD or bot.time >= ATTACK_TIME_CAP:
-        print(f"[{bot.time:.0f}s] ARMY: Supply={supply}, switching to ATTACK.")
-        bot.army_state = ArmyState.ATTACK
+    # A live threat interrupts rallying.
+    if threatened:
+        _set_army_state(bot, ArmyState.DEFEND, "base under threat")
+        return
+
+    if supply >= ATTACK_SUPPLY_THRESHOLD:
+        _set_army_state(bot, ArmyState.ATTACK, f"army supply {supply}")
+    elif bot.time >= ATTACK_TIME_CAP:
+        _set_army_state(bot, ArmyState.ATTACK, "attack time cap reached")
 
 
 async def _do_rally(bot: BotAI, army):
@@ -299,14 +391,16 @@ async def _do_rally(bot: BotAI, army):
 
 
 def _do_defend(bot: BotAI, army):
-    """Send army to defend the most damaged completed structure."""
-    under_attack = _structures_under_attack(bot)
-    if not under_attack:
-        return  # transition will handle this next frame
-
-    target = min(under_attack, key=lambda s: s.health_percentage)
-    _issue_attack(bot, army, target.position,
-                  f"defending {target.name} ({target.health_percentage:.0%} HP)")
+    """
+    Send the army to the current threat: the nearest enemy to our base, or the
+    site of the most recent damage. _transition_state has already computed it.
+    """
+    target = getattr(bot, "threat_position", None)
+    if target is None and bot.townhalls:
+        target = bot.townhalls.center
+    if target is None:
+        return  # nothing left to defend
+    _issue_attack(bot, army, target, "defending")
 
 
 def _do_attack(bot: BotAI, army):

@@ -47,7 +47,17 @@ class ProtossBot(BotAI):
 
         # Army state machine
         self.army_state = ArmyState.RALLY
+        self.army_state_since: float = 0.0
         self.enemy_bases_cleared: set = set()
+
+        # Threat tracking. Protoss structure health never regenerates, so
+        # "is anything damaged" is a permanent condition and cannot be used to
+        # decide whether to keep defending. Instead we watch for hp/shield to
+        # DROP between steps, and for enemies near our structures.
+        self.structure_hp_snapshot: dict = {}   # tag -> (hp+shield, position)
+        self.last_damage_time: float = -1.0e9
+        self.last_damage_pos = None
+        self.threat_position = None
 
         # Timing
         self.last_army_command_time: float = 0.0
