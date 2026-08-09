@@ -63,6 +63,11 @@ class ProtossBot(BotAI):
         self.last_army_command_time: float = 0.0
         self.last_rally_time: float = 0.0
 
+        # Workers reserved for a build (tag -> game time the hold expires), so
+        # auto_saturate_assimilators and friends cannot steal a probe that is
+        # walking to a build site. See helpers.reserve_worker.
+        self.reserved_workers: dict = {}
+
         # Production buildings that have had rally points set
         self.rally_tags_set: set = set()
 
@@ -123,8 +128,11 @@ class ProtossBot(BotAI):
         print(
             f"[{self.time:.1f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
 
-        # Illegal actions fail silently (just continue to next step)
-        await actions.execute_action(action_id, self)
+        # The execution layer reports why it did or did not act, so a dropped
+        # decision is visible in the log instead of showing up as a mystery no-op.
+        result = await actions.execute_action(action_id, self)
+        if self.decision_log is not None:
+            self.decision_log.note_execution(result)
 
     async def on_end(self, game_result):
         if self.decision_log is not None:

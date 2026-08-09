@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
-from helpers import build_structure, warp_in_unit
+from helpers import build_structure, warp_in_unit, ActionResult
 
 # Action names are defined once in obs_spec (index == action id) and imported
 # here so execution dispatch, the parser, and the analysis scripts can never
@@ -23,6 +25,43 @@ ARMY = [
 ]
 
 
+
+def _train(bot: BotAI, unit: UnitTypeId, building: UnitTypeId,
+           requires: UnitTypeId | None = None) -> ActionResult:
+    """
+    Train `unit` from an idle `building`, optionally gated on `requires` being
+    complete. Returns why it did or did not happen.
+    """
+    if requires is not None and not bot.structures(requires).ready:
+        return ActionResult.NO_PREREQ
+    if not bot.can_afford(unit):
+        return ActionResult.UNAFFORDABLE
+    idle = bot.structures(building).ready.idle
+    if not idle:
+        return ActionResult.NO_PRODUCTION
+    idle.first.train(unit)
+    return ActionResult.ISSUED
+
+
+def _train_probe(bot: BotAI) -> ActionResult:
+    """
+    Train a probe, preferring an IDLE nexus.
+
+    This used to be `bot.townhalls.ready.first.train(...)`, which always targeted
+    the same nexus. Its production queue filled up (max 5) and further orders were
+    rejected outright -- 24 silent no-ops across the logged games -- while the
+    other nexuses sat idle. Preferring an idle townhall spreads production and
+    removes the rejection.
+    """
+    if not bot.can_afford(UnitTypeId.PROBE):
+        return ActionResult.UNAFFORDABLE
+    halls = bot.townhalls.ready.idle or bot.townhalls.ready
+    if not halls:
+        return ActionResult.NO_PRODUCTION
+    halls.first.train(UnitTypeId.PROBE)
+    return ActionResult.ISSUED
+
+
 async def execute_action(action_id: int, bot: BotAI):
     """Execute an action. All branches are fully guarded — no .first on empty collections."""
     action_name = ACTIONS[action_id]
@@ -31,100 +70,76 @@ async def execute_action(action_id: int, bot: BotAI):
         pass
 
     elif action_name == "train_probe":
-        if bot.can_afford(UnitTypeId.PROBE) and bot.townhalls.ready:
-            bot.townhalls.ready.first.train(UnitTypeId.PROBE)
+        return _train_probe(bot)
 
     elif action_name == "build_pylon":
-        await build_structure(bot, UnitTypeId.PYLON)
+        return await build_structure(bot, UnitTypeId.PYLON)
 
     elif action_name == "build_gateway":
-        await build_structure(bot, UnitTypeId.GATEWAY)
+        return await build_structure(bot, UnitTypeId.GATEWAY)
 
     elif action_name == "build_cyberneticscore":
-        await build_structure(bot, UnitTypeId.CYBERNETICSCORE)
+        return await build_structure(bot, UnitTypeId.CYBERNETICSCORE)
 
     elif action_name == "build_assimilator":
-        await build_structure(bot, UnitTypeId.ASSIMILATOR)
+        return await build_structure(bot, UnitTypeId.ASSIMILATOR)
 
     elif action_name == "build_nexus":
-        await build_structure(bot, UnitTypeId.NEXUS)
+        return await build_structure(bot, UnitTypeId.NEXUS)
 
     elif action_name == "build_forge":
-        await build_structure(bot, UnitTypeId.FORGE)
+        return await build_structure(bot, UnitTypeId.FORGE)
 
     elif action_name == "build_stargate":
-        await build_structure(bot, UnitTypeId.STARGATE)
+        return await build_structure(bot, UnitTypeId.STARGATE)
 
     elif action_name == "build_robotics_facility":
-        await build_structure(bot, UnitTypeId.ROBOTICSFACILITY)
+        return await build_structure(bot, UnitTypeId.ROBOTICSFACILITY)
 
     elif action_name == "build_twilight_council":
-        await build_structure(bot, UnitTypeId.TWILIGHTCOUNCIL)
+        return await build_structure(bot, UnitTypeId.TWILIGHTCOUNCIL)
 
     elif action_name == "build_photon_cannon":
-        await build_structure(bot, UnitTypeId.PHOTONCANNON)
+        return await build_structure(bot, UnitTypeId.PHOTONCANNON)
 
     elif action_name == "build_fleet_beacon":
-        await build_structure(bot, UnitTypeId.FLEETBEACON)
+        return await build_structure(bot, UnitTypeId.FLEETBEACON)
 
     elif action_name == "build_templar_archive":
-        await build_structure(bot, UnitTypeId.TEMPLARARCHIVE)
+        return await build_structure(bot, UnitTypeId.TEMPLARARCHIVE)
 
     elif action_name == "build_robotics_bay":
-        await build_structure(bot, UnitTypeId.ROBOTICSBAY)
+        return await build_structure(bot, UnitTypeId.ROBOTICSBAY)
 
     elif action_name == "build_shield_battery":
-        await build_structure(bot, UnitTypeId.SHIELDBATTERY)
+        return await build_structure(bot, UnitTypeId.SHIELDBATTERY)
 
     elif action_name == "train_zealot":
-        if bot.can_afford(UnitTypeId.ZEALOT) and bot.structures(UnitTypeId.GATEWAY).ready.idle:
-            bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
-                UnitTypeId.ZEALOT)
+        return _train(bot, UnitTypeId.ZEALOT, UnitTypeId.GATEWAY)
 
     elif action_name == "train_stalker":
-        if (bot.can_afford(UnitTypeId.STALKER)
-                and bot.structures(UnitTypeId.CYBERNETICSCORE).ready
-                and bot.structures(UnitTypeId.GATEWAY).ready.idle):
-            bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
-                UnitTypeId.STALKER)
+        return _train(bot, UnitTypeId.STALKER, UnitTypeId.GATEWAY, requires=UnitTypeId.CYBERNETICSCORE)
 
     elif action_name == "train_immortal":
-        if bot.can_afford(UnitTypeId.IMMORTAL) and bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle:
-            bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle.first.train(
-                UnitTypeId.IMMORTAL)
+        return _train(bot, UnitTypeId.IMMORTAL, UnitTypeId.ROBOTICSFACILITY)
 
     elif action_name == "train_voidray":
-        if bot.can_afford(UnitTypeId.VOIDRAY) and bot.structures(UnitTypeId.STARGATE).ready.idle:
-            bot.structures(UnitTypeId.STARGATE).ready.idle.first.train(
-                UnitTypeId.VOIDRAY)
+        return _train(bot, UnitTypeId.VOIDRAY, UnitTypeId.STARGATE)
 
     elif action_name == "train_carrier":
-        if (bot.can_afford(UnitTypeId.CARRIER)
-                and bot.structures(UnitTypeId.FLEETBEACON).ready
-                and bot.structures(UnitTypeId.STARGATE).ready.idle):
-            bot.structures(UnitTypeId.STARGATE).ready.idle.first.train(
-                UnitTypeId.CARRIER)
+        return _train(bot, UnitTypeId.CARRIER, UnitTypeId.STARGATE, requires=UnitTypeId.FLEETBEACON)
 
     elif action_name == "train_high_templar":
-        if (bot.can_afford(UnitTypeId.HIGHTEMPLAR)
-                and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready
-                and bot.structures(UnitTypeId.GATEWAY).ready.idle):
-            bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
-                UnitTypeId.HIGHTEMPLAR)
+        return _train(bot, UnitTypeId.HIGHTEMPLAR, UnitTypeId.GATEWAY, requires=UnitTypeId.TEMPLARARCHIVE)
 
     elif action_name == "warp_in_zealot":
-        if bot.can_afford(UnitTypeId.ZEALOT) and bot.structures(UnitTypeId.WARPGATE).ready:
-            await warp_in_unit(bot, UnitTypeId.ZEALOT, AbilityId.WARPGATETRAIN_ZEALOT)
+        return await warp_in_unit(bot, UnitTypeId.ZEALOT, AbilityId.WARPGATETRAIN_ZEALOT)
 
     elif action_name == "warp_in_stalker":
-        if bot.can_afford(UnitTypeId.STALKER) and bot.structures(UnitTypeId.WARPGATE).ready:
-            await warp_in_unit(bot, UnitTypeId.STALKER, AbilityId.WARPGATETRAIN_STALKER)
+        return await warp_in_unit(bot, UnitTypeId.STALKER, AbilityId.WARPGATETRAIN_STALKER)
 
     elif action_name == "warp_in_high_templar":
-        if (bot.can_afford(UnitTypeId.HIGHTEMPLAR)
-                and bot.structures(UnitTypeId.WARPGATE).ready
-                and bot.structures(UnitTypeId.TEMPLARARCHIVE).ready):
-            await warp_in_unit(bot, UnitTypeId.HIGHTEMPLAR, AbilityId.WARPGATETRAIN_HIGHTEMPLAR)
+        return await warp_in_unit(bot, UnitTypeId.HIGHTEMPLAR, AbilityId.WARPGATETRAIN_HIGHTEMPLAR, requires=UnitTypeId.TEMPLARARCHIVE)
 
     elif action_name == "research_charge":
         if (bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready
@@ -192,26 +207,15 @@ async def execute_action(action_id: int, bot: BotAI):
             unit.attack(bot.enemy_start_locations[0])
 
     elif action_name == "train_adept":
-        if (bot.can_afford(UnitTypeId.ADEPT)
-                and bot.structures(UnitTypeId.CYBERNETICSCORE).ready
-                and bot.structures(UnitTypeId.GATEWAY).ready.idle):
-            bot.structures(UnitTypeId.GATEWAY).ready.idle.first.train(
-                UnitTypeId.ADEPT)
+        return _train(bot, UnitTypeId.ADEPT, UnitTypeId.GATEWAY, requires=UnitTypeId.CYBERNETICSCORE)
 
     elif action_name == "train_phoenix":
-        if bot.can_afford(UnitTypeId.PHOENIX) and bot.structures(UnitTypeId.STARGATE).ready.idle:
-            bot.structures(UnitTypeId.STARGATE).ready.idle.first.train(
-                UnitTypeId.PHOENIX)
+        return _train(bot, UnitTypeId.PHOENIX, UnitTypeId.STARGATE)
 
     elif action_name == "train_colossus":
-        if (bot.can_afford(UnitTypeId.COLOSSUS)
-                and bot.structures(UnitTypeId.ROBOTICSBAY).ready
-                and bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle):
-            bot.structures(UnitTypeId.ROBOTICSFACILITY).ready.idle.first.train(
-                UnitTypeId.COLOSSUS)
+        return _train(bot, UnitTypeId.COLOSSUS, UnitTypeId.ROBOTICSFACILITY, requires=UnitTypeId.ROBOTICSBAY)
 
     elif action_name == "warp_in_adept":
-        if (bot.can_afford(UnitTypeId.ADEPT)
-                and bot.structures(UnitTypeId.WARPGATE).ready
-                and bot.structures(UnitTypeId.CYBERNETICSCORE).ready):
-            await warp_in_unit(bot, UnitTypeId.ADEPT, AbilityId.TRAINWARP_ADEPT)
+        return await warp_in_unit(bot, UnitTypeId.ADEPT, AbilityId.TRAINWARP_ADEPT, requires=UnitTypeId.CYBERNETICSCORE)
+
+    return ActionResult.NOT_LABELLED

@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.position import Point2
 from enum import Enum
+import math
 import random
 
 # ---------------------------------------------------------------------------
@@ -60,6 +63,93 @@ class ArmyState(Enum):
     RALLY = "RALLY"
     DEFEND = "DEFEND"
     ATTACK = "ATTACK"
+
+
+class ActionResult(Enum):
+    """
+    Why an execution attempt did or did not happen.
+
+    The execution layer used to return None from every path, so a decision that
+    silently failed was indistinguishable from one that worked -- 220 of 246
+    no-ops in the logged games were affordable, meaning something in here
+    dropped them without saying so. Returning a reason turns that into data.
+    """
+    ISSUED = "issued"                 # order actually sent to the game
+    SUPPRESSED = "suppressed"         # refused on purpose (MAX_CONCURRENT_BUILDS)
+    UNAFFORDABLE = "unaffordable"     # not enough minerals/gas
+    NO_PLACEMENT = "no_placement"     # find_placement found nowhere legal
+    NO_WORKER = "no_worker"           # no worker free to build
+    NO_PREREQ = "no_prereq"           # missing powered pylon / townhall / tech
+    NO_TARGET = "no_target"           # no expansion site or free geyser
+    NO_PRODUCTION = "no_production"   # no idle production building
+    NOT_LABELLED = "not_labelled"     # path not yet instrumented
+
+
+# ---------------------------------------------------------------------------
+# Worker reservation ("mutex" on a probe)
+# ---------------------------------------------------------------------------
+#
+# A probe dispatched to build is vulnerable for the whole walk to the site:
+# auto_saturate_assimilators runs on every on_step (~5.6x/second) and used to
+# grab `bot.workers.closest_to(assimilator)` with no filtering, which overrode
+# the build order. already_pending then dropped back to 0 and the decision was
+# logged as a no-op. Reserving the builder makes that impossible.
+#
+# The reservation expires on a timer so a probe that can never reach its site
+# (walled off, unreachable placement) is released instead of being leaked.
+
+WORKER_RESERVATION_SECONDS = 20.0
+
+# Warp-in placement search around the chosen pylon.
+WARP_PLACEMENT_RADIUS = 6.0
+WARP_PLACEMENT_ATTEMPTS = 12
+
+
+def _reservations(bot: BotAI) -> dict:
+    """Reserved worker tags -> game time the reservation expires. Self-pruning."""
+    if not hasattr(bot, "reserved_workers"):
+        bot.reserved_workers = {}
+    expired = [tag for tag, until in bot.reserved_workers.items()
+               if until <= bot.time]
+    for tag in expired:
+        del bot.reserved_workers[tag]
+    return bot.reserved_workers
+
+
+def reserve_worker(bot: BotAI, tag: int,
+                   seconds: float = WORKER_RESERVATION_SECONDS):
+    _reservations(bot)[tag] = bot.time + seconds
+
+
+def release_worker(bot: BotAI, tag: int):
+    _reservations(bot).pop(tag, None)
+
+
+def _worker_is_available(bot: BotAI, worker, reserved: dict) -> bool:
+    """
+    A worker we may command. `is_idle or is_collecting` is the key test: a worker
+    that is mining or returning cargo is demonstrably mobile and not walled off,
+    and -- critically -- a worker that is walking to a build site or already
+    constructing is NEITHER, so this can never steal a builder.
+    """
+    if worker.tag in reserved:
+        return False
+    if worker.tag in bot.unit_tags_received_action:
+        return False   # already given an order this step
+    return worker.is_idle or worker.is_collecting
+
+
+def pick_builder(bot: BotAI, near):
+    """
+    Closest available worker to `near`, preferring one that is actively
+    harvesting (proven able to move) over one that is merely idle.
+    """
+    reserved = _reservations(bot)
+    pool = [w for w in bot.workers if _worker_is_available(bot, w, reserved)]
+    if not pool:
+        return None
+    harvesting = [w for w in pool if w.is_collecting]
+    return min(harvesting or pool, key=lambda w: w.distance_to(near))
 
 
 def get_army_supply(bot: BotAI) -> int:
@@ -183,72 +273,125 @@ DEFAULT_MAX_CONCURRENT_BUILDS = 1
 GEYSER_SEARCH_RADIUS = 15
 
 
-async def build_structure(bot: BotAI, building: UnitTypeId):
-    """Helper to systematically build structures depending on the type."""
+# Placement search. Anchoring every building on the starting nexus boxed the bot
+# in: once the main base filled up, find_placement returned None and every build
+# silently failed. Pylons are spread out by design (they must be, to spread
+# power), so they are far better anchors -- a small radius around each of several
+# pylons covers much more legal ground than one big radius around the nexus, and
+# costs fewer placement queries.
+PLACEMENT_STEP = 2
+PLACEMENT_RADIUS = 12          # search radius per anchor
+MAX_PLACEMENT_ANCHORS = 5      # bounds placement queries per decision
+PYLON_PLACEMENT_STEP = 3       # was 8, which only probed rings at distance 8 & 16
 
-    # Suppress duplicate builds already in flight (see MAX_CONCURRENT_BUILDS).
+
+async def _find_placement_near_any(bot: BotAI, building: UnitTypeId,
+                                   anchors: list, step: int = PLACEMENT_STEP):
+    """First legal placement found around any anchor, best anchor first."""
+    for anchor in anchors[:MAX_PLACEMENT_ANCHORS]:
+        placement = await bot.find_placement(
+            building, near=anchor, placement_step=step,
+            max_distance=PLACEMENT_RADIUS)
+        if placement:
+            return placement
+    return None
+
+
+def _powered_anchors(bot: BotAI) -> list:
+    """Anchors for buildings needing power: every ready pylon, then townhalls."""
+    pylons = sorted(bot.structures(UnitTypeId.PYLON).ready,
+                    key=lambda p: p.distance_to(bot.start_location))
+    return ([p.position for p in pylons]
+            + [th.position for th in bot.townhalls.ready])
+
+
+async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
+    """
+    Try to build `building`, returning an ActionResult describing what happened.
+
+    Every failure path used to `return` silently, which is why 220 of 246 logged
+    no-ops were affordable but unexplained. Now each one names itself.
+    """
     cap = MAX_CONCURRENT_BUILDS.get(building, DEFAULT_MAX_CONCURRENT_BUILDS)
     if bot.already_pending(building) >= cap:
-        return
+        return ActionResult.SUPPRESSED
 
-    starting_nexus = bot.townhalls.closest_to(
-        bot.start_location) if bot.townhalls else None
+    if not bot.can_afford(building):
+        return ActionResult.UNAFFORDABLE
 
+    if not bot.townhalls:
+        return ActionResult.NO_PREREQ
+
+    starting_nexus = bot.townhalls.closest_to(bot.start_location)
+
+    # --- Assimilator: any free geyser at any base ------------------------
     if building == UnitTypeId.ASSIMILATOR:
-        if not bot.can_afford(UnitTypeId.ASSIMILATOR):
-            return
-        # Check every base, not just the main. This used to search only
-        # `starting_nexus` (the townhall closest to start_location), so once the
-        # two main geysers were taken the loop matched nothing and returned
-        # silently -- expansions never got gas no matter what the model chose.
-        # Nearest-to-start ordering keeps the main saturated first.
-        for townhall in bot.townhalls.sorted(
-                lambda th: th.distance_to(bot.start_location)):
-            for vespene in bot.vespene_geyser.closer_than(
+        for townhall in sorted(bot.townhalls,
+                               key=lambda th: th.distance_to(bot.start_location)):
+            for geyser in bot.vespene_geyser.closer_than(
                     GEYSER_SEARCH_RADIUS, townhall):
                 if bot.gas_buildings.filter(
-                        lambda u, v=vespene: u.distance_to(v) < 1):
+                        lambda u, g=geyser: u.distance_to(g) < 1):
                     continue      # already has an assimilator
-                await bot.build(UnitTypeId.ASSIMILATOR, vespene)
-                return
-        return
+                worker = pick_builder(bot, geyser)
+                if worker is None:
+                    return ActionResult.NO_WORKER
+                worker.build(building, geyser)
+                reserve_worker(bot, worker.tag)
+                return ActionResult.ISSUED
+        return ActionResult.NO_TARGET
 
-    elif building == UnitTypeId.PYLON:
-        if bot.can_afford(UnitTypeId.PYLON) and starting_nexus:
-            if bot.structures(UnitTypeId.PYLON).amount == 0:
-                townhall_pos = starting_nexus.position
-                map_center = bot.game_info.map_center
-                direction = (map_center - townhall_pos).normalized
-                target_pos = townhall_pos + direction * 5
-                placement = await bot.find_placement(
-                    UnitTypeId.PYLON, near=target_pos, placement_step=2)
-            else:
-                placement = await bot.find_placement(
-                    UnitTypeId.PYLON,
-                    near=starting_nexus.position,
-                    placement_step=8)
-            if placement:
-                await bot.build(UnitTypeId.PYLON, placement)
-                return
+    # --- Nexus: expand ---------------------------------------------------
+    if building == UnitTypeId.NEXUS:
+        location = await bot.get_next_expansion()
+        if not location:
+            return ActionResult.NO_TARGET
+        worker = pick_builder(bot, location)
+        if worker is None:
+            return ActionResult.NO_WORKER
+        worker.build(building, location)
+        reserve_worker(bot, worker.tag)
+        return ActionResult.ISSUED
 
-    elif building == UnitTypeId.NEXUS:
-        if bot.can_afford(UnitTypeId.NEXUS):
-            location = await bot.get_next_expansion()
-            if location:
-                await bot.build(UnitTypeId.NEXUS, location)
-                return
+    # --- Pylon: spread power across our bases ----------------------------
+    if building == UnitTypeId.PYLON:
+        if not bot.structures(UnitTypeId.PYLON):
+            direction = (bot.game_info.map_center
+                         - starting_nexus.position).normalized
+            anchors = [starting_nexus.position + direction * 5]
+        else:
+            anchors = [th.position for th in sorted(
+                bot.townhalls.ready,
+                key=lambda th: th.distance_to(bot.start_location))]
+            anchors += [p.position
+                        for p in bot.structures(UnitTypeId.PYLON).ready]
+        placement = await _find_placement_near_any(
+            bot, building, anchors, step=PYLON_PLACEMENT_STEP)
+        if not placement:
+            return ActionResult.NO_PLACEMENT
+        worker = pick_builder(bot, placement)
+        if worker is None:
+            return ActionResult.NO_WORKER
+        worker.build(building, placement)
+        reserve_worker(bot, worker.tag)
+        return ActionResult.ISSUED
 
-    else:
-        if bot.can_afford(building) and bot.structures(UnitTypeId.PYLON).ready and starting_nexus:
-            placement = await bot.find_placement(
-                building,
-                near=starting_nexus.position,
-                placement_step=2)
-            if placement:
-                worker = bot.select_build_worker(placement)
-                if worker:
-                    bot.do(worker.build(building, placement))
-                    return
+    # --- Everything else needs pylon power -------------------------------
+    if not bot.structures(UnitTypeId.PYLON).ready:
+        return ActionResult.NO_PREREQ
+
+    placement = await _find_placement_near_any(
+        bot, building, _powered_anchors(bot))
+    if not placement:
+        return ActionResult.NO_PLACEMENT
+
+    worker = pick_builder(bot, placement)
+    if worker is None:
+        return ActionResult.NO_WORKER
+
+    worker.build(building, placement)
+    reserve_worker(bot, worker.tag)
+    return ActionResult.ISSUED
 
 
 # ---------------------------------------------------------------------------
@@ -256,11 +399,35 @@ async def build_structure(bot: BotAI, building: UnitTypeId):
 # ---------------------------------------------------------------------------
 
 async def auto_saturate_assimilators(bot: BotAI):
-    """Assign workers to under-staffed assimilators."""
+    """
+    Assign workers to under-staffed assimilators.
+
+    This was the main builder thief. It used to be:
+
+        probe = bot.workers.closest_to(assimilator)
+        probe.gather(assimilator)
+
+    with no filtering, running every on_step. The nearest worker to a geyser is
+    very often the probe that was just dispatched to build something nearby, so
+    its build order got replaced within ~0.18s and the build silently vanished.
+
+    Now it only considers workers that are idle or collecting (never a builder),
+    skips reserved workers, and skips workers already assigned to that geyser so
+    it stops re-issuing the same order several times a second.
+    """
+    reserved = _reservations(bot)
     for assimilator in bot.structures(UnitTypeId.ASSIMILATOR).ready:
-        if assimilator.assigned_harvesters < 3:
-            probe = bot.workers.closest_to(assimilator)
-            probe.gather(assimilator)
+        if assimilator.assigned_harvesters >= 3:
+            continue
+        candidates = [
+            w for w in bot.workers
+            if _worker_is_available(bot, w, reserved)
+            and getattr(w, "order_target", None) != assimilator.tag
+        ]
+        if not candidates:
+            continue
+        probe = min(candidates, key=lambda w: w.distance_to(assimilator))
+        probe.gather(assimilator)
 
 
 # ---------------------------------------------------------------------------
@@ -526,47 +693,56 @@ async def auto_merge_archons(bot: BotAI):
 # ---------------------------------------------------------------------------
 
 
-async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId, ability_id: AbilityId) -> bool:
+async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId,
+                       ability_id: AbilityId,
+                       requires: UnitTypeId | None = None) -> ActionResult:
     """
-    Attempt to warp in a unit near a pylon.
-    Returns True if the warp command was issued.
+    Warp a unit in near a pylon. Returns why it did or did not happen.
+
+    NO_PRODUCTION here means every warpgate is on warp cooldown -- the single
+    biggest cause of warp-in no-ops, and invisible to the model because the
+    observation has no cooldown feature.
     """
+    if requires is not None and not bot.structures(requires).ready:
+        return ActionResult.NO_PREREQ
+
+    if not bot.can_afford(unit_type):
+        return ActionResult.UNAFFORDABLE
+
     warpgates = bot.structures(UnitTypeId.WARPGATE).ready
     if not warpgates:
-        return False
-
-    warpgate = warpgates.first
-    abilities = await bot.get_available_abilities(warpgate)
-    if ability_id not in abilities:
-        return False
+        return ActionResult.NO_PREREQ
 
     pylons = bot.structures(UnitTypeId.PYLON).ready
     if not pylons:
-        return False
+        return ActionResult.NO_PREREQ
+
+    # Any warpgate that is off cooldown will do.
+    ready_gate = None
+    for warpgate in warpgates:
+        abilities = await bot.get_available_abilities(warpgate)
+        if ability_id in abilities:
+            ready_gate = warpgate
+            break
+    if ready_gate is None:
+        return ActionResult.NO_PRODUCTION      # all warpgates on cooldown
 
     pylon = pylons.closest_to(bot.game_info.map_center)
-
-    placement_radius = 6.0
-    for _ in range(12):
-        angle = random.uniform(0, 6.2832)
-        distance = random.uniform(1.5, placement_radius)
-        offset = Point2((distance * __import__("math").cos(angle),
-                         distance * __import__("math").sin(angle)))
-        target_pos = pylon.position + offset
-
+    for _ in range(WARP_PLACEMENT_ATTEMPTS):
+        angle = random.uniform(0, 2 * math.pi)
+        distance = random.uniform(1.5, WARP_PLACEMENT_RADIUS)
+        offset = Point2((distance * math.cos(angle),
+                         distance * math.sin(angle)))
         placement = await bot.find_placement(
-            AbilityId.WARPGATETRAIN_ZEALOT,
-            target_pos,
-            max_distance=2,
-            placement_step=1,
-        )
+            ability_id, pylon.position + offset,
+            max_distance=2, placement_step=1)
         if placement:
-            warpgate.warp_in(unit_type, placement)
-            return True
+            ready_gate.warp_in(unit_type, placement)
+            return ActionResult.ISSUED
 
-    # Fallback: warp at pylon
-    warpgate.warp_in(unit_type, pylon.position)
-    return True
+    # Last resort: warp onto the pylon itself.
+    ready_gate.warp_in(unit_type, pylon.position)
+    return ActionResult.ISSUED
 
 
 # ---------------------------------------------------------------------------

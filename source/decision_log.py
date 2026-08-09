@@ -140,6 +140,8 @@ class DecisionLogger:
         self._chosen = {}                      # action name -> count
         self._noop = {}                        # action name -> count
         self._suppressed = {}                  # action name -> count
+        self._reasons = {}                     # exec reason -> count
+        self._reason_by_action = {}            # action -> {reason: count}
         self._feature_names = obs_spec.feature_names()
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -215,6 +217,32 @@ class DecisionLogger:
                   f"had no effect")
 
     # -- public API --------------------------------------------------------
+
+    def note_execution(self, result):
+        """
+        Attach the execution layer's own reason to the buffered decision.
+
+        Called right after execute_action(). Previously the logger GUESSED at
+        suppression by re-implementing the MAX_CONCURRENT_BUILDS check, which
+        would silently disagree with reality if that logic changed and every
+        other failure mode (no placement, no worker, unaffordable) was
+        indistinguishable from a successful order that did nothing.
+        """
+        if not self.enabled or self._pending is None:
+            return
+        try:
+            name = getattr(result, "value", result)
+            self._pending["exec_result"] = name
+            if name is not None:
+                self._reasons[name] = self._reasons.get(name, 0) + 1
+                by_action = self._reason_by_action.setdefault(
+                    self._pending["action"], {})
+                by_action[name] = by_action.get(name, 0) + 1
+            # The execution layer is authoritative about deliberate suppression.
+            if name == "suppressed":
+                self._pending["suppressed"] = True
+        except Exception:
+            pass
 
     def resolve_previous(self, bot: BotAI):
         """Call at the start of each decision, before choosing a new action."""
@@ -325,6 +353,34 @@ class DecisionLogger:
         out("  A high rate means the execution layer is dropping it (a bug),")
         out("  or it was unaffordable. 'suppr' is the deliberate")
         out("  MAX_CONCURRENT_BUILDS guard and is expected.")
+
+        if self._reasons:
+            out()
+            out("-" * 68)
+            out("  WHY EXECUTION SUCCEEDED OR FAILED (reported by the")
+            out("  execution layer itself, not inferred)")
+            out("-" * 68)
+            total_reasons = sum(self._reasons.values())
+            for reason, n in sorted(self._reasons.items(), key=lambda kv: -kv[1]):
+                out(f"    {reason:<18} {n:>5}  ({100.0 * n / total_reasons:>5.1f}%)")
+
+            failures = {a: rs for a, rs in self._reason_by_action.items()
+                        if any(r not in ("issued", "not_labelled")
+                               for r in rs)}
+            if failures:
+                out()
+                out("  Failures by action:")
+                for action in sorted(failures,
+                                     key=lambda a: -sum(
+                                         n for r, n in failures[a].items()
+                                         if r not in ("issued", "not_labelled"))):
+                    parts = ", ".join(
+                        f"{r}={n}" for r, n in
+                        sorted(failures[action].items(), key=lambda kv: -kv[1])
+                        if r not in ("issued", "not_labelled"))
+                    if parts:
+                        out(f"    {action:<26} {parts}")
+
         out("=" * 68)
 
         try:
