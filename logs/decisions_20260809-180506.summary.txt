@@ -1,0 +1,43 @@
+
+====================================================================
+  DECISION LOG SUMMARY
+====================================================================
+  Result: Result.Defeat
+  Decisions: 113
+  do_nothing: 38 (33.6%)
+  mask blocked the model's top choice: 12 (10.6%)
+
+  action                      chosen   no-op  suppr  no-op %
+  ----------------------------------------------------------
+  train_probe                     39      13      0      33%
+  do_nothing                      38       0      0       0%
+  build_gateway                   11       0      3       0%
+  build_pylon                      8       1      0      12%
+  build_assimilator                8       0      4       0%
+  build_nexus                      7       1      3      25%
+  build_cyberneticscore            1       1      0     100%
+  train_zealot                     1       0      0       0%
+
+  no-op = chosen by the model but had no effect on the game.
+  A high rate means the execution layer is dropping it (a bug),
+  or it was unaffordable. 'suppr' is the deliberate
+  MAX_CONCURRENT_BUILDS guard and is expected.
+
+--------------------------------------------------------------------
+  WHY EXECUTION SUCCEEDED OR FAILED (reported by the
+  execution layer itself, not inferred)
+--------------------------------------------------------------------
+    issued                57  ( 50.4%)
+    not_labelled          38  ( 33.6%)
+    suppressed            10  (  8.8%)
+    unaffordable           7  (  6.2%)
+    no_placement           1  (  0.9%)
+
+  Failures by action:
+    train_probe                unaffordable=5
+    build_nexus                suppressed=3, unaffordable=1
+    build_assimilator          suppressed=4
+    build_gateway              suppressed=3
+    build_pylon                unaffordable=1
+    build_cyberneticscore      no_placement=1
+====================================================================

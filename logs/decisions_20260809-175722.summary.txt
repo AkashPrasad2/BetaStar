@@ -1,0 +1,31 @@
+
+====================================================================
+  DECISION LOG SUMMARY
+====================================================================
+  Result: Result.Defeat
+  Decisions: 38
+  do_nothing: 23 (60.5%)
+  mask blocked the model's top choice: 3 (7.9%)
+
+  action                      chosen   no-op  suppr  no-op %
+  ----------------------------------------------------------
+  do_nothing                      23       0      0       0%
+  train_probe                     14       9      0      64%  <-- often dropped
+  build_assimilator                1       0      0       0%
+
+  no-op = chosen by the model but had no effect on the game.
+  A high rate means the execution layer is dropping it (a bug),
+  or it was unaffordable. 'suppr' is the deliberate
+  MAX_CONCURRENT_BUILDS guard and is expected.
+
+--------------------------------------------------------------------
+  WHY EXECUTION SUCCEEDED OR FAILED (reported by the
+  execution layer itself, not inferred)
+--------------------------------------------------------------------
+    not_labelled          23  ( 60.5%)
+    unaffordable           9  ( 23.7%)
+    issued                 6  ( 15.8%)
+
+  Failures by action:
+    train_probe                unaffordable=9
+====================================================================

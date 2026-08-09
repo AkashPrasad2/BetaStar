@@ -1,0 +1,68 @@
+
+====================================================================
+  DECISION LOG SUMMARY
+====================================================================
+  Result: Result.Victory
+  Decisions: 266
+  do_nothing: 107 (40.2%)
+  mask blocked the model's top choice: 25 (9.4%)
+
+  action                      chosen   no-op  suppr  no-op %
+  ----------------------------------------------------------
+  do_nothing                     107       0      0       0%
+  train_probe                     25       5      0      20%
+  build_pylon                     24       3      5      16%
+  warp_in_zealot                  19       2      0      11%
+  train_zealot                    17       2      0      12%
+  build_stargate                   9       1      4      20%
+  build_shield_battery             7       0      1       0%
+  build_gateway                    6       1      0      17%
+  build_nexus                      5       0      1       0%
+  warp_in_stalker                  5       2      0      40%
+  build_robotics_facility          5       0      3       0%
+  build_assimilator                4       0      0       0%
+  research_warp_gate               4       3      0      75%
+  build_twilight_council           4       0      3       0%
+  build_forge                      4       0      2       0%
+  build_robotics_bay               4       0      3       0%
+  train_stalker                    3       2      0      67%
+  train_carrier                    3       0      0       0%
+  upgrade_ground_weapons           3       0      0       0%
+  train_adept                      2       2      0     100%
+  build_cyberneticscore            1       0      0       0%
+  build_fleet_beacon               1       0      0       0%
+  train_immortal                   1       0      0       0%
+  train_colossus                   1       0      0       0%
+  build_photon_cannon              1       0      0       0%
+  build_templar_archive            1       0      0       0%
+
+  no-op = chosen by the model but had no effect on the game.
+  A high rate means the execution layer is dropping it (a bug),
+  or it was unaffordable. 'suppr' is the deliberate
+  MAX_CONCURRENT_BUILDS guard and is expected.
+
+--------------------------------------------------------------------
+  WHY EXECUTION SUCCEEDED OR FAILED (reported by the
+  execution layer itself, not inferred)
+--------------------------------------------------------------------
+    issued               121  ( 45.5%)
+    not_labelled         114  ( 42.9%)
+    suppressed            22  (  8.3%)
+    no_production          6  (  2.3%)
+    unaffordable           3  (  1.1%)
+
+  Failures by action:
+    build_pylon                suppressed=5, unaffordable=1
+    build_stargate             suppressed=4
+    build_robotics_facility    suppressed=3
+    build_twilight_council     suppressed=3
+    build_robotics_bay         suppressed=3
+    train_zealot               no_production=2
+    train_stalker              no_production=2
+    train_adept                no_production=2
+    build_forge                suppressed=2
+    train_probe                unaffordable=1
+    build_gateway              unaffordable=1
+    build_nexus                suppressed=1
+    build_shield_battery       suppressed=1
+====================================================================
