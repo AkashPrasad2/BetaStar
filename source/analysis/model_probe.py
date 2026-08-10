@@ -30,8 +30,10 @@ if PROJECT_ROOT not in sys.path:
 
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
-OBS_SIZE = 70
-NUM_ACTIONS = 35
+# Never hardcode these -- the obs layout changes (it went 70 -> 74 when the
+# resource encoding gained magnitude channels) and a stale literal here would
+# slice the action out of the wrong dataset column entirely.
+from obs_spec import OBS_SIZE, NUM_ACTIONS   # noqa: E402
 
 # NOTE: must stay in sync with ACTIONS in source/actions.py (35 actions, 0-34).
 ACTIONS = [

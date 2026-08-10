@@ -33,8 +33,10 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-OBS_SIZE = 70
-NUM_ACTIONS = 35
+# Never hardcode these -- the obs layout changes (it went 70 -> 74 when the
+# resource encoding gained magnitude channels) and a stale literal here would
+# slice the action out of the wrong dataset column entirely.
+from obs_spec import OBS_SIZE, NUM_ACTIONS   # noqa: E402
 
 ACTIONS = [
     "do_nothing",            # 0

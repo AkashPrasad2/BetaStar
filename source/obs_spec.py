@@ -14,22 +14,24 @@ different input distribution at inference than it was trained on. Routing both
 through this module makes the transformation identical by construction; the
 only remaining difference is the accuracy of the raw inputs handed in.
 
-Feature layout (70 total)
+Feature layout (74 total)
 -------------------------
     [0]      game time (clipped, normalized by TIME_NORM)
-    [1:5]    minerals one-hot (4 bins)
-    [5:9]    vespene one-hot (4 bins)
-    [9]      supply used
-    [10]     supply cap
-    [11]     worker saturation
-    [12:27]  completed structure counts   (15)
-    [27:38]  completed unit counts        (11)
-    [38:52]  pending structure counts     (14, excludes WARPGATE)
-    [52:63]  pending unit counts          (11)
-    [63]     idle gateway+warpgate count
-    [64]     idle stargate count
-    [65]     idle robotics facility count
-    [66]     idle warpgate count
+    [1:6]    minerals one-hot (5 bins, edges 100/300/700/1500)
+    [6]      minerals magnitude (sqrt-scaled, monotonic)
+    [7:12]   vespene one-hot (5 bins, edges 25/100/250/600)
+    [12]     vespene magnitude (sqrt-scaled, monotonic)
+    [13]     supply used
+    [14]     supply cap
+    [15]     worker saturation
+    [16:31]  completed structure counts   (15)
+    [31:42]  completed unit counts        (11)
+    [42:56]  pending structure counts     (14, excludes WARPGATE)
+    [56:67]  pending unit counts          (11)
+    [67]     idle gateway+warpgate count
+    [68]     idle stargate count
+    [69]     idle robotics facility count
+    [70]     idle warpgate count
     [67]     ground weapons level
     [68]     shields level
     [69]     air weapons level
@@ -134,33 +136,56 @@ IDLE_NORM = 5.0
 UPGRADE_NORM = 3.0
 WORKERS_PER_BASE = 22
 
-MINERAL_BIN_EDGES = (100.0, 300.0, 500.0)
-GAS_BIN_EDGES = (25.0, 100.0, 200.0)
+MINERAL_BIN_EDGES = (100.0, 300.0, 700.0, 1500.0)
+GAS_BIN_EDGES = (25.0, 100.0, 250.0, 600.0)
+
+# Bin counts are DERIVED from the edges, never written out by hand, so widening
+# or adding an edge cannot silently desynchronise the index table from the
+# vector that build_obs_vector() actually produces.
+N_MINERAL_BINS = len(MINERAL_BIN_EDGES) + 1
+N_GAS_BINS = len(GAS_BIN_EDGES) + 1
+
+# One-hot bins mark affordability thresholds (100 = pylon, 400 = nexus, and the
+# gas costs) but they throw away ORDER: nothing tells the model that the top bin
+# means "more than" the one below it, and it can never extrapolate past the last
+# edge. That is fatal for the one judgement we most want it to make -- "I am
+# sitting on too much money" -- and the old top bin was active in 68% of logged
+# decisions, so the feature was very nearly a constant.
+#
+# So each resource also gets a single monotonic magnitude channel. sqrt scaling
+# rather than log: log1p squashes the whole high end together (500 and 4000
+# minerals would differ by only 0.25) which defeats the purpose, while sqrt
+# spreads the observed range evenly -- the median logged value of ~1110 minerals
+# lands at 0.53, near the middle of [0,1], which is also better conditioned as a
+# network input.
+RESOURCE_MAG_NORM = 4000.0
 
 # ---------------------------------------------------------------------------
 # Index layout — derived from the vocabularies so it cannot drift
 # ---------------------------------------------------------------------------
 
 IDX_TIME = 0
-IDX_MINERAL_BINS = 1                      # 1..4
-IDX_GAS_BINS = IDX_MINERAL_BINS + 4       # 5..8
-IDX_SUPPLY_USED = IDX_GAS_BINS + 4        # 9
-IDX_SUPPLY_CAP = IDX_SUPPLY_USED + 1      # 10
-IDX_WORKER_SAT = IDX_SUPPLY_CAP + 1       # 11
-IDX_STRUCT_BASE = IDX_WORKER_SAT + 1      # 12
-IDX_UNIT_BASE = IDX_STRUCT_BASE + len(STRUCTURES)            # 27
-IDX_PEND_STRUCT_BASE = IDX_UNIT_BASE + len(UNITS)            # 38
+IDX_MINERAL_BINS = 1                                   # 1 .. N_MINERAL_BINS
+IDX_MINERAL_MAG = IDX_MINERAL_BINS + N_MINERAL_BINS    # 6
+IDX_GAS_BINS = IDX_MINERAL_MAG + 1                     # 7 .. 7+N_GAS_BINS-1
+IDX_GAS_MAG = IDX_GAS_BINS + N_GAS_BINS                # 12
+IDX_SUPPLY_USED = IDX_GAS_MAG + 1                      # 13
+IDX_SUPPLY_CAP = IDX_SUPPLY_USED + 1                   # 14
+IDX_WORKER_SAT = IDX_SUPPLY_CAP + 1                    # 15
+IDX_STRUCT_BASE = IDX_WORKER_SAT + 1                   # 16
+IDX_UNIT_BASE = IDX_STRUCT_BASE + len(STRUCTURES)            # 31
+IDX_PEND_STRUCT_BASE = IDX_UNIT_BASE + len(UNITS)            # 42
 IDX_PEND_UNIT_BASE = (IDX_PEND_STRUCT_BASE
-                      + len(PENDING_STRUCTURES))             # 52
-IDX_IDLE_GW_WG = IDX_PEND_UNIT_BASE + len(UNITS)             # 63
-IDX_IDLE_SG = IDX_IDLE_GW_WG + 1                             # 64
-IDX_IDLE_ROBO = IDX_IDLE_SG + 1                              # 65
-IDX_IDLE_WG = IDX_IDLE_ROBO + 1                              # 66
-IDX_GROUND_WEAPONS_LVL = IDX_IDLE_WG + 1                     # 67
-IDX_SHIELDS_LVL = IDX_GROUND_WEAPONS_LVL + 1                 # 68
-IDX_AIR_WEAPONS_LVL = IDX_SHIELDS_LVL + 1                    # 69
+                      + len(PENDING_STRUCTURES))             # 56
+IDX_IDLE_GW_WG = IDX_PEND_UNIT_BASE + len(UNITS)             # 67
+IDX_IDLE_SG = IDX_IDLE_GW_WG + 1                             # 68
+IDX_IDLE_ROBO = IDX_IDLE_SG + 1                              # 69
+IDX_IDLE_WG = IDX_IDLE_ROBO + 1                              # 70
+IDX_GROUND_WEAPONS_LVL = IDX_IDLE_WG + 1                     # 71
+IDX_SHIELDS_LVL = IDX_GROUND_WEAPONS_LVL + 1                 # 72
+IDX_AIR_WEAPONS_LVL = IDX_SHIELDS_LVL + 1                    # 73
 
-OBS_SIZE = IDX_AIR_WEAPONS_LVL + 1                           # 70
+OBS_SIZE = IDX_AIR_WEAPONS_LVL + 1                           # 74
 
 # Name -> absolute feature index, for callers that need a specific feature.
 STRUCT_IDX = {n: IDX_STRUCT_BASE + i for i, n in enumerate(STRUCTURES)}
@@ -189,6 +214,17 @@ def _one_hot_bins(value: float, edges: Sequence[float]) -> list[float]:
             break
     out[slot] = 1.0
     return out
+
+
+def _magnitude(value: float, cap: float = RESOURCE_MAG_NORM) -> float:
+    """
+    Monotonic, order-preserving magnitude in [0, 1], sqrt-scaled.
+
+    Unlike the one-hot bins this never saturates within the cap, so the model can
+    distinguish 600 minerals from 3000 -- a distinction the old encoding simply
+    did not contain.
+    """
+    return min(max(value, 0.0) / cap, 1.0) ** 0.5
 
 
 def compute_idle_counts(
@@ -245,11 +281,14 @@ def build_obs_vector(
     # [0] time — clipped so the feature can never leave [0, 1]
     obs.append(min(max(time_s, 0.0) / TIME_NORM, 1.0))
 
-    # [1:5] minerals, [5:9] gas
+    # minerals: one-hot affordability bins + monotonic magnitude
     obs.extend(_one_hot_bins(minerals, MINERAL_BIN_EDGES))
+    obs.append(_magnitude(minerals))
+    # gas: same
     obs.extend(_one_hot_bins(vespene, GAS_BIN_EDGES))
+    obs.append(_magnitude(vespene))
 
-    # [9], [10] supply
+    # supply
     obs.append(supply_used / SUPPLY_NORM)
     obs.append(supply_cap / SUPPLY_NORM)
 
@@ -295,8 +334,10 @@ def build_obs_vector(
 def feature_names() -> list[str]:
     """Human-readable name per index — for audits and debugging output."""
     names = ["time_norm"]
-    names += [f"minerals_bin{i}" for i in range(4)]
-    names += [f"gas_bin{i}" for i in range(4)]
+    names += [f"minerals_bin{i}" for i in range(N_MINERAL_BINS)]
+    names += ["minerals_mag"]
+    names += [f"gas_bin{i}" for i in range(N_GAS_BINS)]
+    names += ["gas_mag"]
     names += ["supply_used", "supply_cap", "worker_sat"]
     names += [f"struct_{s}" for s in STRUCTURES]
     names += [f"unit_{u}" for u in UNITS]
