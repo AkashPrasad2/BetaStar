@@ -282,7 +282,13 @@ GEYSER_SEARCH_RADIUS = 15
 PLACEMENT_STEP = 2
 PLACEMENT_RADIUS = 12          # search radius per anchor
 MAX_PLACEMENT_ANCHORS = 5      # bounds placement queries per decision
-PYLON_PLACEMENT_STEP = 3       # was 8, which only probed rings at distance 8 & 16
+PYLON_PLACEMENT_STEP = 8
+
+# Structures that belong on the OUTSIDE of the base facing the enemy, rather than
+# tucked in behind the tech. A shield battery only does its job where the fighting
+# happens. Add UnitTypeId.PHOTONCANNON here to place cannons the same way.
+FORWARD_STRUCTURES = {UnitTypeId.SHIELDBATTERY}
+FORWARD_NUDGE = 3.0            # units toward the enemy from the anchor pylon
 
 
 async def _find_placement_near_any(bot: BotAI, building: UnitTypeId,
@@ -297,8 +303,36 @@ async def _find_placement_near_any(bot: BotAI, building: UnitTypeId,
     return None
 
 
-def _powered_anchors(bot: BotAI) -> list:
-    """Anchors for buildings needing power: every ready pylon, then townhalls."""
+def _enemy_anchor(bot: BotAI):
+    """The point to face when placing forward structures."""
+    if bot.enemy_start_locations:
+        return bot.enemy_start_locations[0]
+    return bot.game_info.map_center
+
+
+def _powered_anchors(bot: BotAI, forward: bool = False) -> list:
+    """
+    Anchors for buildings needing power: every ready pylon, then townhalls.
+
+    Normally ordered nearest-our-start first, so tech buildings cluster safely in
+    the main. With `forward=True` the ordering flips to nearest-the-enemy and each
+    anchor is nudged toward the enemy, so defensive structures end up on the
+    OUTSIDE of the base where they can actually cover a fight instead of being
+    walled in behind the tech. The nudge stays inside pylon power radius (6.5),
+    and the game's placement query rejects unpowered spots anyway.
+    """
+    if forward:
+        target = _enemy_anchor(bot)
+        pylons = sorted(bot.structures(UnitTypeId.PYLON).ready,
+                        key=lambda p: p.distance_to(target))
+        anchors = []
+        for pylon in pylons:
+            direction = (target - pylon.position).normalized
+            anchors.append(pylon.position + direction * FORWARD_NUDGE)
+        anchors += [th.position for th in sorted(
+            bot.townhalls.ready, key=lambda th: th.distance_to(target))]
+        return anchors
+
     pylons = sorted(bot.structures(UnitTypeId.PYLON).ready,
                     key=lambda p: p.distance_to(bot.start_location))
     return ([p.position for p in pylons]
@@ -381,7 +415,8 @@ async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
         return ActionResult.NO_PREREQ
 
     placement = await _find_placement_near_any(
-        bot, building, _powered_anchors(bot))
+        bot, building, _powered_anchors(
+            bot, forward=building in FORWARD_STRUCTURES))
     if not placement:
         return ActionResult.NO_PLACEMENT
 
