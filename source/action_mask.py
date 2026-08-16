@@ -82,11 +82,33 @@ IDX_IDLE_SG = obs_spec.IDX_IDLE_SG
 IDX_IDLE_ROBO = obs_spec.IDX_IDLE_ROBO
 IDX_IDLE_WG = obs_spec.IDX_IDLE_WG
 
+IDX_SUPPLY_USED = obs_spec.IDX_SUPPLY_USED
+IDX_SUPPLY_CAP = obs_spec.IDX_SUPPLY_CAP
+
 IDX_GROUND_WEAPONS_LVL = obs_spec.IDX_GROUND_WEAPONS_LVL
 IDX_SHIELDS_LVL = obs_spec.IDX_SHIELDS_LVL
 IDX_AIR_WEAPONS_LVL = obs_spec.IDX_AIR_WEAPONS_LVL
 
 EPS = 0.01
+
+
+def _apply_supply_gate(mask: torch.Tensor, obs: torch.Tensor,
+                       slack: float = 0.0) -> None:
+    """
+    Clear unit-production actions that our supply headroom cannot pay for.
+
+    Mutates `mask` in place. Headroom is recovered from the supply_used and
+    supply_cap channels rather than the clipped supply_remaining feature, so the
+    comparison is exact even above the clip point.
+
+    `slack` relaxes the check for the training mask; see
+    obs_spec.TRAINING_SUPPLY_SLACK for why that is necessary.
+    """
+    remaining = (obs[:, IDX_SUPPLY_CAP]
+                 - obs[:, IDX_SUPPLY_USED]) * obs_spec.SUPPLY_NORM
+    for action_id, cost in obs_spec.ACTION_SUPPLY_COST.items():
+        affordable = remaining >= (cost - slack - obs_spec.SUPPLY_EPS)
+        mask[:, action_id] &= affordable
 
 
 def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
@@ -255,6 +277,10 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
 
     # Action 34: warp_in_adept — needs idle Warpgate + Cybernetics Core
     mask[:, 34] = has_idle_wg & has_cybcore
+
+    # Supply headroom. Exact at inference: the game rejects these orders outright
+    # when we are capped, so leaving them legal only wasted decisions.
+    _apply_supply_gate(mask, obs)
 
     return mask
 
@@ -465,6 +491,12 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
 
     # Action 34: warp_in_adept — warpgate + cybcore both poc (no idle check)
     mask[:, 34] = poc_warpgate & poc_cybcore
+
+    # Supply headroom, relaxed by one pylon. Same reasoning as the pending-or-
+    # complete structure prereqs above: a 4s window can contain both a pylon
+    # completing and the unit that it paid for, and demoting that label would
+    # throw away real signal.
+    _apply_supply_gate(mask, obs, slack=obs_spec.TRAINING_SUPPLY_SLACK)
 
     return mask
 

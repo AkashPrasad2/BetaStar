@@ -110,6 +110,45 @@ ACTION_NAMES: list[str] = [
 
 NUM_ACTIONS = len(ACTION_NAMES)
 
+# Supply each action consumes. Only unit production costs supply; structures,
+# upgrades and research cost none, so anything absent from this table is free.
+#
+# This lives here rather than in action_mask.py because three places need to
+# agree on it: the strict inference mask, the relaxed training mask, and the
+# parser's _action_legal_numpy label check. A supply-blocked train order is
+# rejected by the game exactly like a missing prerequisite, so masking it is the
+# same kind of legality constraint the masks already encode -- and it is the fix
+# for the observed failure where the bot burned 68-80s of the opening choosing
+# train_probe at 15/15 supply while floating up to 850 minerals.
+ACTION_SUPPLY_COST = {
+    ACTION_NAMES.index("train_probe"):          1,
+    ACTION_NAMES.index("train_zealot"):         2,
+    ACTION_NAMES.index("train_stalker"):        2,
+    ACTION_NAMES.index("train_immortal"):       4,
+    ACTION_NAMES.index("train_voidray"):        4,
+    ACTION_NAMES.index("train_carrier"):        6,
+    ACTION_NAMES.index("train_high_templar"):   2,
+    ACTION_NAMES.index("train_adept"):          2,
+    ACTION_NAMES.index("train_phoenix"):        2,
+    ACTION_NAMES.index("train_colossus"):       6,
+    ACTION_NAMES.index("warp_in_zealot"):       2,
+    ACTION_NAMES.index("warp_in_stalker"):      2,
+    ACTION_NAMES.index("warp_in_high_templar"): 2,
+    ACTION_NAMES.index("warp_in_adept"):        2,
+}
+
+# Supply values are integers, so a 0.5 tolerance absorbs float round-trip error
+# from the /200 normalization without ever changing a comparison.
+SUPPLY_EPS = 0.5
+
+# The training mask is deliberately LENIENT by one pylon. Labels sit on a 4s grid
+# and the supply snapshot is taken at the window start, so a pro who was at 0
+# headroom when the window opened may legitimately have finished a pylon and
+# trained a unit inside the same window. Demoting that label would destroy real
+# signal, which is the one failure mode the training mask must never have. The
+# strict inference mask uses no slack.
+TRAINING_SUPPLY_SLACK = 8.0
+
 # ---------------------------------------------------------------------------
 # Decision cadence
 # ---------------------------------------------------------------------------

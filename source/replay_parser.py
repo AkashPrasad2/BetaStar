@@ -58,6 +58,8 @@ from obs_spec import (
     STRUCT_IDX, UNIT_IDX, PEND_STRUCT_IDX, PEND_UNIT_IDX,
     IDX_GROUND_WEAPONS_LVL, IDX_SHIELDS_LVL, IDX_AIR_WEAPONS_LVL,
     IDX_IDLE_GW_WG, IDX_IDLE_SG, IDX_IDLE_ROBO, IDX_IDLE_WG,
+    IDX_SUPPLY_USED, IDX_SUPPLY_CAP, SUPPLY_NORM,
+    ACTION_SUPPLY_COST, SUPPLY_EPS, TRAINING_SUPPLY_SLACK,
     DECISION_INTERVAL_SECONDS, ACTION_NAMES, build_obs_vector,
 )
 from parse_log import ParseLogger
@@ -320,7 +322,20 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
         33: (poc_robo and has_robobay, "needs poc_robo and has_robobay"),
         34: (poc_warpgate and poc_cybcore, "needs warpgate and poc_cybcore"),
     }
-    return rules.get(action_id, (False, "unknown action"))
+    ok, reason = rules.get(action_id, (False, "unknown action"))
+    if not ok:
+        return ok, reason
+
+    # Supply headroom, mirroring action_mask._apply_supply_gate with the same
+    # training slack. These two must stay in lockstep: if this is stricter than
+    # build_training_mask we keep labels the loss then masks out, and if it is
+    # more lenient we demote labels the model was allowed to predict.
+    cost = ACTION_SUPPLY_COST.get(action_id)
+    if cost is not None:
+        remaining = (obs[IDX_SUPPLY_CAP] - obs[IDX_SUPPLY_USED]) * SUPPLY_NORM
+        if remaining < cost - TRAINING_SUPPLY_SLACK - SUPPLY_EPS:
+            return False, f"needs {cost} supply headroom"
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
