@@ -14,7 +14,7 @@ different input distribution at inference than it was trained on. Routing both
 through this module makes the transformation identical by construction; the
 only remaining difference is the accuracy of the raw inputs handed in.
 
-Feature layout (74 total)
+Feature layout (76 total)
 -------------------------
     [0]      game time (clipped, normalized by TIME_NORM)
     [1:6]    minerals one-hot (5 bins, edges 100/300/700/1500)
@@ -23,18 +23,20 @@ Feature layout (74 total)
     [12]     vespene magnitude (sqrt-scaled, monotonic)
     [13]     supply used
     [14]     supply cap
-    [15]     worker saturation
-    [16:31]  completed structure counts   (15)
-    [31:42]  completed unit counts        (11)
-    [42:56]  pending structure counts     (14, excludes WARPGATE)
-    [56:67]  pending unit counts          (11)
-    [67]     idle gateway+warpgate count
-    [68]     idle stargate count
-    [69]     idle robotics facility count
-    [70]     idle warpgate count
-    [67]     ground weapons level
-    [68]     shields level
-    [69]     air weapons level
+    [15]     supply remaining (clipped 0..16, normalized by 16)
+    [16]     supply blocked flag (1.0 when used >= cap)
+    [17]     worker saturation
+    [18:33]  completed structure counts   (15)
+    [33:44]  completed unit counts        (11)
+    [44:58]  pending structure counts     (14, excludes WARPGATE)
+    [58:69]  pending unit counts          (11)
+    [69]     idle gateway+warpgate count
+    [70]     idle stargate count
+    [71]     idle robotics facility count
+    [72]     idle warpgate count
+    [73]     ground weapons level
+    [74]     shields level
+    [75]     air weapons level
 """
 
 from __future__ import annotations
@@ -160,6 +162,29 @@ N_GAS_BINS = len(GAS_BIN_EDGES) + 1
 # network input.
 RESOURCE_MAG_NORM = 4000.0
 
+# Supply headroom. `supply_remaining` is cap - used, which is a LINEAR function of
+# two features we already have, so it adds no representational power: the input
+# projection could compute it from a single +1/-1 weight pair. It is here for
+# conditioning, not capacity.
+#
+# Both existing channels are divided by 200, so at 15/15 they are both exactly
+# 0.075 and the quantity that matters is the difference of two small, nearly
+# equal numbers -- a signal that has to survive being summed against 70+ other
+# inputs. The model demonstrably failed to learn it: across two logged games it
+# sat supply blocked for 68-80s of the opening while assigning build_pylon a mean
+# probability of 0.10, and 0.016 at the moment it first capped.
+#
+# So headroom gets its own channel at a scale where it actually varies. /16 not
+# /200 because the decision-relevant range is 0-16 (a pylon is 8); anything more
+# is just "plenty", so we clip. Note the clip IS lossy -- unlike pure rescaling it
+# discards the difference between 20 and 60 spare supply, which we do not care
+# about -- and the blocked flag is a THRESHOLD, i.e. nonlinear, so it hands the
+# network a predicate it could otherwise only approximate.
+#
+# supply_used can exceed supply_cap when pylons die, so remaining goes negative;
+# the magnitude clamps at 0 and the flag carries that case.
+SUPPLY_REMAINING_NORM = 16.0
+
 # ---------------------------------------------------------------------------
 # Index layout — derived from the vocabularies so it cannot drift
 # ---------------------------------------------------------------------------
@@ -171,21 +196,23 @@ IDX_GAS_BINS = IDX_MINERAL_MAG + 1                     # 7 .. 7+N_GAS_BINS-1
 IDX_GAS_MAG = IDX_GAS_BINS + N_GAS_BINS                # 12
 IDX_SUPPLY_USED = IDX_GAS_MAG + 1                      # 13
 IDX_SUPPLY_CAP = IDX_SUPPLY_USED + 1                   # 14
-IDX_WORKER_SAT = IDX_SUPPLY_CAP + 1                    # 15
-IDX_STRUCT_BASE = IDX_WORKER_SAT + 1                   # 16
-IDX_UNIT_BASE = IDX_STRUCT_BASE + len(STRUCTURES)            # 31
-IDX_PEND_STRUCT_BASE = IDX_UNIT_BASE + len(UNITS)            # 42
+IDX_SUPPLY_REMAINING = IDX_SUPPLY_CAP + 1              # 15
+IDX_SUPPLY_BLOCKED = IDX_SUPPLY_REMAINING + 1          # 16
+IDX_WORKER_SAT = IDX_SUPPLY_BLOCKED + 1                # 17
+IDX_STRUCT_BASE = IDX_WORKER_SAT + 1                   # 18
+IDX_UNIT_BASE = IDX_STRUCT_BASE + len(STRUCTURES)            # 33
+IDX_PEND_STRUCT_BASE = IDX_UNIT_BASE + len(UNITS)            # 44
 IDX_PEND_UNIT_BASE = (IDX_PEND_STRUCT_BASE
-                      + len(PENDING_STRUCTURES))             # 56
-IDX_IDLE_GW_WG = IDX_PEND_UNIT_BASE + len(UNITS)             # 67
-IDX_IDLE_SG = IDX_IDLE_GW_WG + 1                             # 68
-IDX_IDLE_ROBO = IDX_IDLE_SG + 1                              # 69
-IDX_IDLE_WG = IDX_IDLE_ROBO + 1                              # 70
-IDX_GROUND_WEAPONS_LVL = IDX_IDLE_WG + 1                     # 71
-IDX_SHIELDS_LVL = IDX_GROUND_WEAPONS_LVL + 1                 # 72
-IDX_AIR_WEAPONS_LVL = IDX_SHIELDS_LVL + 1                    # 73
+                      + len(PENDING_STRUCTURES))             # 58
+IDX_IDLE_GW_WG = IDX_PEND_UNIT_BASE + len(UNITS)             # 69
+IDX_IDLE_SG = IDX_IDLE_GW_WG + 1                             # 70
+IDX_IDLE_ROBO = IDX_IDLE_SG + 1                              # 71
+IDX_IDLE_WG = IDX_IDLE_ROBO + 1                              # 72
+IDX_GROUND_WEAPONS_LVL = IDX_IDLE_WG + 1                     # 73
+IDX_SHIELDS_LVL = IDX_GROUND_WEAPONS_LVL + 1                 # 74
+IDX_AIR_WEAPONS_LVL = IDX_SHIELDS_LVL + 1                    # 75
 
-OBS_SIZE = IDX_AIR_WEAPONS_LVL + 1                           # 74
+OBS_SIZE = IDX_AIR_WEAPONS_LVL + 1                           # 76
 
 # Name -> absolute feature index, for callers that need a specific feature.
 STRUCT_IDX = {n: IDX_STRUCT_BASE + i for i, n in enumerate(STRUCTURES)}
@@ -288,9 +315,14 @@ def build_obs_vector(
     obs.extend(_one_hot_bins(vespene, GAS_BIN_EDGES))
     obs.append(_magnitude(vespene))
 
-    # supply
+    # supply, plus explicit headroom. Derived here rather than taken as an
+    # argument so the parser and the live wrapper cannot disagree about it.
     obs.append(supply_used / SUPPLY_NORM)
     obs.append(supply_cap / SUPPLY_NORM)
+    remaining = supply_cap - supply_used
+    obs.append(min(max(remaining, 0.0), SUPPLY_REMAINING_NORM)
+               / SUPPLY_REMAINING_NORM)
+    obs.append(1.0 if remaining <= 0.0 else 0.0)
 
     # [11] worker saturation
     nexus_count = structures_done.get("NEXUS", 0)
@@ -338,7 +370,8 @@ def feature_names() -> list[str]:
     names += ["minerals_mag"]
     names += [f"gas_bin{i}" for i in range(N_GAS_BINS)]
     names += ["gas_mag"]
-    names += ["supply_used", "supply_cap", "worker_sat"]
+    names += ["supply_used", "supply_cap", "supply_remaining",
+              "supply_blocked", "worker_sat"]
     names += [f"struct_{s}" for s in STRUCTURES]
     names += [f"unit_{u}" for u in UNITS]
     names += [f"pend_struct_{s}" for s in PENDING_STRUCTURES]

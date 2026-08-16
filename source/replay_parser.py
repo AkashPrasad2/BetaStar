@@ -114,6 +114,49 @@ UNIT_NAME_MAP = {
     "Colossus":    "COLOSSUS",
 }
 
+# Supply cost of every Protoss unit, keyed by sc2reader name.
+#
+# This deliberately covers units that are NOT in UNIT_NAME_MAP. The feature
+# vocabulary only decides which unit COUNTS become observation features; supply
+# is consumed by everything. Pros build Observers, Sentries, Warp Prisms and
+# Oracles constantly, so restricting the sum to the 11 tracked types would
+# undercount supply badly and make the derived value useless.
+#
+# Structures cost no supply in Protoss, so anything absent from this table
+# contributes 0 and needs no entry.
+PROTOSS_SUPPLY_COST = {
+    "Probe":            1,
+    "Zealot":           2,
+    "Stalker":          2,
+    "Sentry":           2,
+    "Adept":            2,
+    "HighTemplar":      2,
+    "DarkTemplar":      2,
+    "Archon":           4,
+    "Observer":         1,
+    "ObserverSiegeMode": 1,
+    "WarpPrism":        2,
+    "WarpPrismPhasing": 2,
+    "Immortal":         4,
+    "Colossus":         6,
+    "Disruptor":        3,
+    "Phoenix":          2,
+    "VoidRay":          4,
+    "Oracle":           3,
+    "Tempest":          5,
+    "Carrier":          6,
+    "Mothership":       8,
+    "MothershipCore":   2,      # pre-LotV replays
+    # Interceptors and AdeptPhaseShift are free; listed for the reader.
+    "Interceptor":      0,
+    "AdeptPhaseShift":  0,
+}
+
+# Protoss supply providers, and the hard game cap.
+NEXUS_SUPPLY = 15
+PYLON_SUPPLY = 8
+SUPPLY_CAP_MAX = 200
+
 TRAIN_COMMAND_TO_UNIT = {
     "TrainProbe":        "PROBE",
     "TrainZealot":       "ZEALOT",
@@ -332,6 +375,13 @@ class WindowedState:
         # window -> list of (bucket, key, delta)
         self._deltas: dict[int, list[tuple[str, str, int]]] = defaultdict(list)
 
+        # window -> change in supply consumed. Derived from object lifetimes for
+        # the same reason the counts are: PlayerStatsEvent only fires about every
+        # 10s, so the stats-event supply is up to 10s stale against a 4s grid,
+        # while the live bot reads bot.supply_used exactly. Deriving it here makes
+        # the training value frame-accurate and kills that train/inference skew.
+        self._supply_deltas: dict[int, float] = defaultdict(float)
+
         self._resource_samples: list[tuple[float, float, float, float, float]] = []
         self._upgrade_events: list[tuple[float, str, int]] = []
         self._production_commands: list[tuple[float, str]] = []
@@ -420,6 +470,16 @@ class WindowedState:
             return ("unit", UNIT_NAME_MAP[name])
         return None
 
+    def _emit_supply(self, cost: float, w_start: int, w_end: int | None):
+        """Hold `cost` supply over [w_start, w_end), None meaning until the end."""
+        if w_end is not None and w_end <= w_start:
+            return
+        self._supply_deltas[w_start] += cost
+        if w_end is not None:
+            self._supply_deltas[w_end] -= cost
+            self._note_window(w_end)
+        self._note_window(w_start)
+
     def _emit(self, bucket: str, key: str, w_start: int, w_end: int | None):
         """Add +1 over [w_start, w_end), where None means 'until the end'."""
         if w_end is not None and w_end <= w_start:
@@ -444,6 +504,20 @@ class WindowedState:
             segments = self._type_segments(unit)
             first_name = segments[0][1] if segments else None
             first = self._canonical(first_name)
+
+            # --- supply consumed: [started_at, died_at) -----------------------
+            # SC2 charges supply the moment production begins and refunds it when
+            # the unit dies (or when production is cancelled, which also sets
+            # died_at). Supply cost is invariant across a unit's morphs -- two
+            # 2-supply templar merging into a 4-supply archon conserves it, and
+            # the merge shows up as two deaths plus one birth -- so keying on the
+            # first type name is correct.
+            cost = PROTOSS_SUPPLY_COST.get(first_name, 0)
+            if cost:
+                # Starting probes exist from frame 0 with no started_at.
+                supply_from = started if started is not None else (finished or 0)
+                self._emit_supply(cost, self._win(supply_from),
+                                  self._win(died) if died is not None else None)
 
             # --- under construction: [started_at, finished_at) ---
             if first is not None and first[0] == "structure" and started is not None:
@@ -530,7 +604,9 @@ class WindowedState:
 
         res_i = 0
         minerals, vespene = 50.0, 0.0
-        supply_used, supply_cap = 12.0, 15.0
+        # Kept only as a fallback if a replay yields no usable object lifetimes.
+        stats_supply_used, stats_supply_cap = 12.0, 15.0
+        supply_used = 0.0
 
         upg_i = 0
         upgrade_lvls = {k: 0 for k in UPGRADE_KEYS}
@@ -546,9 +622,27 @@ class WindowedState:
 
             while (res_i < len(self._resource_samples)
                    and self._resource_samples[res_i][0] <= t):
-                _, minerals, vespene, supply_used, supply_cap = \
+                _, minerals, vespene, stats_supply_used, stats_supply_cap = \
                     self._resource_samples[res_i]
                 res_i += 1
+
+            # Supply, derived rather than sampled. Both terms come from
+            # frame-accurate object lifetimes, so unlike minerals/vespene these
+            # cannot lag the 4s grid. Cap is whatever our COMPLETED pylons and
+            # nexuses provide; the game hard-caps it at 200.
+            supply_used += self._supply_deltas.get(w, 0.0)
+            done_struct = counts["done_struct"]
+            derived_cap = min(
+                float(SUPPLY_CAP_MAX),
+                NEXUS_SUPPLY * done_struct.get("NEXUS", 0)
+                + PYLON_SUPPLY * done_struct.get("PYLON", 0))
+            if derived_cap > 0.0:
+                w_supply_used, w_supply_cap = supply_used, derived_cap
+            else:
+                # No lifetimes recovered (very old or truncated replay): fall back
+                # to the stats event. Never write back into `supply_used`, which
+                # is a running accumulator for the remaining windows.
+                w_supply_used, w_supply_cap = stats_supply_used, stats_supply_cap
 
             while (upg_i < len(self._upgrade_events)
                    and self._upgrade_events[upg_i][0] <= t):
@@ -560,8 +654,8 @@ class WindowedState:
                 "time": float(t),
                 "minerals": minerals,
                 "vespene": vespene,
-                "supply_used": supply_used,
-                "supply_cap": supply_cap,
+                "supply_used": w_supply_used,
+                "supply_cap": w_supply_cap,
                 "structures_done": dict(counts["done_struct"]),
                 "units_done": dict(counts["done_unit"]),
                 "structures_pending": dict(counts["pending_struct"]),
