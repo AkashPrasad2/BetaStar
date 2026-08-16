@@ -12,18 +12,8 @@ from helpers import build_structure, warp_in_unit, ActionResult
 from obs_spec import ACTION_NAMES as ACTIONS
 
 
-ARMY = [
-    UnitTypeId.ZEALOT,
-    UnitTypeId.STALKER,
-    UnitTypeId.ADEPT,
-    UnitTypeId.ARCHON,
-    UnitTypeId.IMMORTAL,
-    UnitTypeId.COLOSSUS,
-    UnitTypeId.VOIDRAY,
-    UnitTypeId.PHOENIX,
-    UnitTypeId.CARRIER,
-]
-
+# (The army unit list lives in helpers.ARMY_TYPES, which the state machine uses.
+# The copy that used to be here existed only for the removed attack action.)
 
 
 def _train(bot: BotAI, unit: UnitTypeId, building: UnitTypeId,
@@ -129,9 +119,6 @@ async def execute_action(action_id: int, bot: BotAI):
     elif action_name == "train_carrier":
         return _train(bot, UnitTypeId.CARRIER, UnitTypeId.STARGATE, requires=UnitTypeId.FLEETBEACON)
 
-    elif action_name == "train_high_templar":
-        return _train(bot, UnitTypeId.HIGHTEMPLAR, UnitTypeId.GATEWAY, requires=UnitTypeId.TEMPLARARCHIVE)
-
     elif action_name == "warp_in_zealot":
         return await warp_in_unit(bot, UnitTypeId.ZEALOT, AbilityId.WARPGATETRAIN_ZEALOT)
 
@@ -202,10 +189,6 @@ async def execute_action(action_id: int, bot: BotAI):
                 if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3):
                     forge.research(UpgradeId.PROTOSSSHIELDSLEVEL3)
 
-    elif action_name == "attack_enemy_base":
-        for unit in bot.units.of_type(ARMY).idle:
-            unit.attack(bot.enemy_start_locations[0])
-
     elif action_name == "train_adept":
         return _train(bot, UnitTypeId.ADEPT, UnitTypeId.GATEWAY, requires=UnitTypeId.CYBERNETICSCORE)
 
@@ -215,7 +198,8 @@ async def execute_action(action_id: int, bot: BotAI):
     elif action_name == "train_colossus":
         return _train(bot, UnitTypeId.COLOSSUS, UnitTypeId.ROBOTICSFACILITY, requires=UnitTypeId.ROBOTICSBAY)
 
-    elif action_name == "warp_in_adept":
-        return await warp_in_unit(bot, UnitTypeId.ADEPT, AbilityId.TRAINWARP_ADEPT, requires=UnitTypeId.CYBERNETICSCORE)
-
+    # Note: there is deliberately no attack action. Attacking is owned by the
+    # army state machine in helpers.manage_army(); the parser never labelled it
+    # (106,449 Attack events, zero labels), so as a model output it could only
+    # ever fire from sampling noise.
     return ActionResult.NOT_LABELLED

@@ -4,7 +4,7 @@ SC2 Protoss Imitation Learning — Transformer Model + Training Script
 Architecture:
     obs (OBS_SIZE,) -> input proj (OBS_SIZE->128) -> sinusoidal pos enc
     -> 4x causal TransformerEncoderLayer (d=128, heads=4, ff=256)
-    -> LayerNorm -> Linear (128->35 logits)
+    -> LayerNorm -> Linear (128->NUM_ACTIONS logits)
 
 Legal-action masking applied consistently in BOTH the training loop
 and predict_action, via the shared action_mask module.
@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from pathlib import Path
 
 from action_mask import apply_legal_mask, apply_training_mask
-from obs_spec import OBS_SIZE
+from obs_spec import OBS_SIZE, NUM_ACTIONS
 
 # ---------------------------------------------------------------------------
 # Config
@@ -29,7 +29,9 @@ DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
 
 # OBS_SIZE comes from obs_spec, the single source of truth for the layout.
-NUM_ACTIONS = 35   # action 0 = do_nothing, kept for index stability
+# NUM_ACTIONS comes from obs_spec.ACTION_NAMES, the single source of truth. It was
+# hardcoded to 35 here, which would have silently disagreed with the mask and the
+# parser the moment an action was added or removed.
 
 # Transformer hyper-params
 D_MODEL = 128

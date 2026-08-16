@@ -27,6 +27,10 @@ from obs_spec import STRUCT_IDX, UNIT_IDX, PEND_STRUCT_IDX, PEND_UNIT_IDX
 
 NUM_ACTIONS = obs_spec.NUM_ACTIONS  # all indices are active actions
 
+# Actions are addressed by NAME, never by integer literal. Removing an action
+# from obs_spec.ACTION_NAMES therefore cannot shift a rule onto its neighbour.
+_A = obs_spec.ACTION_ID
+
 # ---------------------------------------------------------------------------
 # Feature indices — imported from obs_spec (the single source of truth for the
 # observation layout) rather than restated here, so they cannot drift out of
@@ -159,124 +163,106 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # 2+ idle high templar to merge into archon
     has_2_hightemplar = obs[:, IDX_HIGHTEMPLAR] > (1.5 / 30.0)
 
-    # Any combat unit = "has army"
-    has_army = (
-        (obs[:, IDX_ZEALOT] > EPS) |
-        (obs[:, IDX_STALKER] > EPS) |
-        (obs[:, IDX_IMMORTAL] > EPS) |
-        (obs[:, IDX_VOIDRAY] > EPS) |
-        (obs[:, IDX_CARRIER] > EPS) |
-        (obs[:, IDX_ARCHON] > EPS) |
-        (obs[:, IDX_ADEPT] > EPS) |
-        (obs[:, IDX_PHOENIX] > EPS) |
-        (obs[:, IDX_COLOSSUS] > EPS)
-    )
 
     # ------------------------------------------------------------------
     # Action 0: do_nothing — always legal
-    mask[:, 0] = True
+    mask[:, _A["do_nothing"]] = True
 
     # Action 1: train_probe — needs Nexus + queue room
-    mask[:, 1] = has_nexus
+    mask[:, _A["train_probe"]] = has_nexus
 
     # Action 2: build_pylon — always legal
-    mask[:, 2] = True
+    mask[:, _A["build_pylon"]] = True
 
     # Action 3: build_gateway — needs Pylon
-    mask[:, 3] = has_pylon
+    mask[:, _A["build_gateway"]] = has_pylon
 
     # Action 4: build_cyberneticscore — needs Gateway, max 2 allowed
-    mask[:, 4] = has_gateway & under_cybcore_cap
+    mask[:, _A["build_cyberneticscore"]] = has_gateway & under_cybcore_cap
 
     # Action 5: build_assimilator — needs Nexus
-    mask[:, 5] = has_nexus
+    mask[:, _A["build_assimilator"]] = has_nexus
 
     # Action 6: build_nexus — always legal
-    mask[:, 6] = True
+    mask[:, _A["build_nexus"]] = True
 
     # Action 7: build_forge — needs Pylon
-    mask[:, 7] = has_pylon
+    mask[:, _A["build_forge"]] = has_pylon
 
     # Action 8: build_stargate — needs Cybernetics Core
-    mask[:, 8] = has_cybcore
+    mask[:, _A["build_stargate"]] = has_cybcore
 
     # Action 9: build_robotics_facility — needs Cybernetics Core
-    mask[:, 9] = has_cybcore
+    mask[:, _A["build_robotics_facility"]] = has_cybcore
 
     # Action 10: build_twilight_council — needs Cybernetics Core, must not have one
-    mask[:, 10] = has_cybcore & no_twilight
+    mask[:, _A["build_twilight_council"]] = has_cybcore & no_twilight
 
     # Action 11: build_photon_cannon — needs Forge
-    mask[:, 11] = has_forge
+    mask[:, _A["build_photon_cannon"]] = has_forge
 
     # Action 12: build_fleet_beacon — needs Stargate, must not have one
-    mask[:, 12] = has_stargate & no_fleet
+    mask[:, _A["build_fleet_beacon"]] = has_stargate & no_fleet
 
     # Action 13: build_templar_archive — needs Twilight Council, must not have one
-    mask[:, 13] = has_twilight & no_temparch
+    mask[:, _A["build_templar_archive"]] = has_twilight & no_temparch
 
     # Action 14: build_robotics_bay — needs Robotics Facility, must not have one
-    mask[:, 14] = has_robo & no_robobay
+    mask[:, _A["build_robotics_bay"]] = has_robo & no_robobay
 
     # Action 15: build_shield_battery — needs Cybernetics Core
-    mask[:, 15] = has_cybcore
+    mask[:, _A["build_shield_battery"]] = has_cybcore
 
     # Action 16: train_zealot — needs idle Gateway
-    mask[:, 16] = has_idle_gw_wg
+    mask[:, _A["train_zealot"]] = has_idle_gw_wg
 
     # Action 17: train_stalker — needs idle Gateway + Cybernetics Core
-    mask[:, 17] = has_idle_gw_wg & has_cybcore
+    mask[:, _A["train_stalker"]] = has_idle_gw_wg & has_cybcore
 
     # Action 18: train_immortal — needs idle Robotics Facility
-    mask[:, 18] = has_idle_robo
+    mask[:, _A["train_immortal"]] = has_idle_robo
 
     # Action 19: train_voidray — needs idle Stargate
-    mask[:, 19] = has_idle_sg
+    mask[:, _A["train_voidray"]] = has_idle_sg
 
     # Action 20: train_carrier — needs idle Stargate + Fleet Beacon
-    mask[:, 20] = has_idle_sg & has_fleet
+    mask[:, _A["train_carrier"]] = has_idle_sg & has_fleet
 
-    # Action 21: train_high_templar — needs idle Gateway + Templar Archive
-    mask[:, 21] = has_idle_gw_wg & has_temparch
 
     # Action 22: warp_in_zealot — needs idle Warpgate
-    mask[:, 22] = has_idle_wg
+    mask[:, _A["warp_in_zealot"]] = has_idle_wg
 
     # Action 23: warp_in_stalker — needs idle Warpgate + Cybernetics Core
-    mask[:, 23] = has_idle_wg & has_cybcore
+    mask[:, _A["warp_in_stalker"]] = has_idle_wg & has_cybcore
 
     # Action 24: warp_in_high_templar — needs idle Warpgate + Templar Archive
-    mask[:, 24] = has_idle_wg & has_temparch
+    mask[:, _A["warp_in_high_templar"]] = has_idle_wg & has_temparch
 
     # Action 25: research_charge — needs Twilight Council
-    mask[:, 25] = has_twilight
+    mask[:, _A["research_charge"]] = has_twilight
 
     # Action 26: research_warp_gate — needs Cybernetics Core
-    mask[:, 26] = has_cybcore
+    mask[:, _A["research_warp_gate"]] = has_cybcore
 
     # Action 27: upgrade_ground_weapons — needs Forge, level < 3
-    mask[:, 27] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
+    mask[:, _A["upgrade_ground_weapons"]] = has_forge & (obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
 
     # Action 28: upgrade_air_weapons — needs Cybernetics Core, level < 3
-    mask[:, 28] = has_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
+    mask[:, _A["upgrade_air_weapons"]] = has_cybcore & (obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
 
     # Action 29: upgrade_shields — needs Forge, level < 3
-    mask[:, 29] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
+    mask[:, _A["upgrade_shields"]] = has_forge & (obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
 
-    # Action 30: attack_enemy_base — needs at least one combat unit
-    mask[:, 30] = has_army
 
     # Action 31: train_adept — needs idle Gateway + Cybernetics Core
-    mask[:, 31] = has_idle_gw_wg & has_cybcore
+    mask[:, _A["train_adept"]] = has_idle_gw_wg & has_cybcore
 
     # Action 32: train_phoenix — needs idle Stargate
-    mask[:, 32] = has_idle_sg
+    mask[:, _A["train_phoenix"]] = has_idle_sg
 
     # Action 33: train_colossus — needs idle Robotics Facility + Robotics Bay (1-of)
-    mask[:, 33] = has_idle_robo & has_robobay
+    mask[:, _A["train_colossus"]] = has_idle_robo & has_robobay
 
-    # Action 34: warp_in_adept — needs idle Warpgate + Cybernetics Core
-    mask[:, 34] = has_idle_wg & has_cybcore
 
     # Supply headroom. Exact at inference: the game rejects these orders outright
     # when we are capped, so leaving them legal only wasted decisions.
@@ -373,124 +359,106 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # --- 2+ high templar to merge into archon ---
     has_2_hightemplar = obs[:, IDX_HIGHTEMPLAR] > (1.5 / 30.0)
 
-    # --- Any combat unit = "has army" ---
-    has_army = (
-        (obs[:, IDX_ZEALOT]   > EPS) |
-        (obs[:, IDX_STALKER]  > EPS) |
-        (obs[:, IDX_IMMORTAL] > EPS) |
-        (obs[:, IDX_VOIDRAY]  > EPS) |
-        (obs[:, IDX_CARRIER]  > EPS) |
-        (obs[:, IDX_ARCHON]   > EPS) |
-        (obs[:, IDX_ADEPT]    > EPS) |
-        (obs[:, IDX_PHOENIX]  > EPS) |
-        (obs[:, IDX_COLOSSUS] > EPS)
-    )
 
     # ------------------------------------------------------------------
     # Action 0: do_nothing — always legal
-    mask[:, 0] = True
+    mask[:, _A["do_nothing"]] = True
 
     # Action 1: train_probe — needs Nexus (no queue cap in training)
-    mask[:, 1] = has_nexus
+    mask[:, _A["train_probe"]] = has_nexus
 
     # Action 2: build_pylon — always legal
-    mask[:, 2] = True
+    mask[:, _A["build_pylon"]] = True
 
     # Action 3: build_gateway — needs Pylon
-    mask[:, 3] = poc_pylon
+    mask[:, _A["build_gateway"]] = poc_pylon
 
     # Action 4: build_cyberneticscore — gateway poc, max 2 allowed
-    mask[:, 4] = poc_gateway_type & under_cybcore_cap
+    mask[:, _A["build_cyberneticscore"]] = poc_gateway_type & under_cybcore_cap
 
     # Action 5: build_assimilator — needs Nexus
-    mask[:, 5] = has_nexus
+    mask[:, _A["build_assimilator"]] = has_nexus
 
     # Action 6: build_nexus — always legal
-    mask[:, 6] = True
+    mask[:, _A["build_nexus"]] = True
 
     # Action 7: build_forge — needs Pylon
-    mask[:, 7] = poc_pylon
+    mask[:, _A["build_forge"]] = poc_pylon
 
     # Action 8: build_stargate — cybcore poc
-    mask[:, 8] = poc_cybcore
+    mask[:, _A["build_stargate"]] = poc_cybcore
 
     # Action 9: build_robotics_facility — cybcore poc
-    mask[:, 9] = poc_cybcore
+    mask[:, _A["build_robotics_facility"]] = poc_cybcore
 
     # Action 10: build_twilight_council — cybcore poc, no existing twilight
-    mask[:, 10] = poc_cybcore & no_twilight
+    mask[:, _A["build_twilight_council"]] = poc_cybcore & no_twilight
 
     # Action 11: build_photon_cannon — needs completed Forge
-    mask[:, 11] = has_forge
+    mask[:, _A["build_photon_cannon"]] = has_forge
 
     # Action 12: build_fleet_beacon — stargate poc, no existing fleet beacon
-    mask[:, 12] = poc_stargate & no_fleet
+    mask[:, _A["build_fleet_beacon"]] = poc_stargate & no_fleet
 
     # Action 13: build_templar_archive — twilight poc, no existing templar archive
-    mask[:, 13] = poc_twilight & no_temparch
+    mask[:, _A["build_templar_archive"]] = poc_twilight & no_temparch
 
     # Action 14: build_robotics_bay — robo poc, no existing robotics bay
-    mask[:, 14] = poc_robo & ~has_robobay
+    mask[:, _A["build_robotics_bay"]] = poc_robo & ~has_robobay
 
     # Action 15: build_shield_battery — cybcore poc
-    mask[:, 15] = poc_cybcore
+    mask[:, _A["build_shield_battery"]] = poc_cybcore
 
     # Action 16: train_zealot — gateway poc (no idle check)
-    mask[:, 16] = poc_gateway_type
+    mask[:, _A["train_zealot"]] = poc_gateway_type
 
     # Action 17: train_stalker — gateway + cybcore both poc (no idle check)
-    mask[:, 17] = poc_gateway_type & poc_cybcore
+    mask[:, _A["train_stalker"]] = poc_gateway_type & poc_cybcore
 
     # Action 18: train_immortal — robo poc (no idle check)
-    mask[:, 18] = poc_robo
+    mask[:, _A["train_immortal"]] = poc_robo
 
     # Action 19: train_voidray — stargate poc (no idle check)
-    mask[:, 19] = poc_stargate
+    mask[:, _A["train_voidray"]] = poc_stargate
 
     # Action 20: train_carrier — stargate poc + fleet beacon complete
-    mask[:, 20] = poc_stargate & has_fleet
+    mask[:, _A["train_carrier"]] = poc_stargate & has_fleet
 
-    # Action 21: train_high_templar — gateway + templar archive both poc (no idle)
-    mask[:, 21] = poc_gateway_type & poc_temparch
 
     # Action 22: warp_in_zealot — warpgate poc (no idle check)
-    mask[:, 22] = poc_warpgate
+    mask[:, _A["warp_in_zealot"]] = poc_warpgate
 
     # Action 23: warp_in_stalker — warpgate + cybcore both poc (no idle check)
-    mask[:, 23] = poc_warpgate & poc_cybcore
+    mask[:, _A["warp_in_stalker"]] = poc_warpgate & poc_cybcore
 
     # Action 24: warp_in_high_templar — warpgate + templar archive both poc (no idle)
-    mask[:, 24] = poc_warpgate & poc_temparch
+    mask[:, _A["warp_in_high_templar"]] = poc_warpgate & poc_temparch
 
     # Action 25: research_charge — twilight poc
-    mask[:, 25] = poc_twilight
+    mask[:, _A["research_charge"]] = poc_twilight
 
     # Action 26: research_warp_gate — cybcore poc
-    mask[:, 26] = poc_cybcore
+    mask[:, _A["research_warp_gate"]] = poc_cybcore
 
     # Action 27: upgrade_ground_weapons — forge poc (no level cap in training to handle lag)
-    mask[:, 27] = poc_forge
+    mask[:, _A["upgrade_ground_weapons"]] = poc_forge
 
     # Action 28: upgrade_air_weapons — cybcore poc (no level cap in training)
-    mask[:, 28] = poc_cybcore
+    mask[:, _A["upgrade_air_weapons"]] = poc_cybcore
 
     # Action 29: upgrade_shields — forge poc (no level cap in training)
-    mask[:, 29] = poc_forge
+    mask[:, _A["upgrade_shields"]] = poc_forge
 
-    # Action 30: attack_enemy_base — needs army
-    mask[:, 30] = has_army
 
     # Action 31: train_adept — gateway + cybcore both poc (no idle check)
-    mask[:, 31] = poc_gateway_type & poc_cybcore
+    mask[:, _A["train_adept"]] = poc_gateway_type & poc_cybcore
 
     # Action 32: train_phoenix — stargate poc (no idle check)
-    mask[:, 32] = poc_stargate
+    mask[:, _A["train_phoenix"]] = poc_stargate
 
     # Action 33: train_colossus — robo poc + robobay complete (no idle check)
-    mask[:, 33] = poc_robo & has_robobay
+    mask[:, _A["train_colossus"]] = poc_robo & has_robobay
 
-    # Action 34: warp_in_adept — warpgate + cybcore both poc (no idle check)
-    mask[:, 34] = poc_warpgate & poc_cybcore
 
     # Supply headroom, relaxed by one pylon. Same reasoning as the pending-or-
     # complete structure prereqs above: a 4s window can contain both a pylon

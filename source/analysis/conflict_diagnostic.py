@@ -36,45 +36,11 @@ DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 # Never hardcode these -- the obs layout changes (it went 70 -> 74 when the
 # resource encoding gained magnitude channels) and a stale literal here would
 # slice the action out of the wrong dataset column entirely.
-from obs_spec import OBS_SIZE, NUM_ACTIONS   # noqa: E402
+from obs_spec import OBS_SIZE, NUM_ACTIONS
+# Action names come from obs_spec, never a local copy: the private lists that
+# used to live here silently went stale when the action space changed.
+from obs_spec import ACTION_NAMES as ACTIONS   # noqa: E402
 
-ACTIONS = [
-    "do_nothing",            # 0
-    "train_probe",           # 1
-    "build_pylon",           # 2
-    "build_gateway",         # 3
-    "build_cyberneticscore",  # 4
-    "build_assimilator",     # 5
-    "build_nexus",           # 6
-    "build_forge",           # 7
-    "build_stargate",        # 8
-    "build_robotics_facility",  # 9
-    "build_twilight_council",  # 10
-    "build_photon_cannon",   # 11
-    "build_fleet_beacon",    # 12
-    "build_templar_archive",  # 13
-    "build_robotics_bay",    # 14
-    "build_shield_battery",  # 15
-    "train_zealot",          # 16
-    "train_stalker",         # 17
-    "train_immortal",        # 18
-    "train_voidray",         # 19
-    "train_carrier",         # 20
-    "train_high_templar",    # 21
-    "warp_in_zealot",        # 22
-    "warp_in_stalker",       # 23
-    "warp_in_high_templar",  # 24
-    "research_charge",       # 25
-    "research_warp_gate",    # 26
-    "upgrade_ground_weapons",  # 27
-    "upgrade_air_weapons",   # 28
-    "upgrade_shields",       # 29
-    "attack_enemy_base",     # 30
-    "train_adept",           # 31
-    "train_phoenix",         # 32
-    "train_colossus",        # 33
-    "warp_in_adept",         # 34
-]
 
 
 def load_flat_dataset(path: str):

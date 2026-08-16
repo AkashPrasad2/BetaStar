@@ -71,6 +71,23 @@ UPGRADE_KEYS: list[str] = ["GROUND_WEAPONS", "SHIELDS", "AIR_WEAPONS"]
 # scripts can name actions without importing burnysc2, and so there is only one
 # copy of this list. actions.py imports it as ACTIONS for execution dispatch.
 ACTION_NAMES: list[str] = [
+    # Index == action id. This list is the ONLY place the ordering is defined;
+    # every other module resolves ids through ACTION_ID or ACTION_NAMES so that
+    # adding or removing an action cannot silently shift a rule onto the wrong
+    # action. (That bug has bitten this project twice already, in model_probe.py
+    # and compare_replay_to_dataset.py.)
+    #
+    # Removed 2026-08: train_high_templar, attack_enemy_base and warp_in_adept.
+    # All three had ZERO labels across 741 replays / 193k windows, so they were
+    # untrainable outputs that could only fire from sampling noise:
+    #   * train_high_templar  - pros warp templar in, they never train from a
+    #                           gateway, so the TrainHighTemplar ability never
+    #                           appears (warp_in_high_templar has 3,308 labels).
+    #   * warp_in_adept       - the mirror case; pros use TrainAdept (3,960).
+    #   * attack_enemy_base   - the parser sees 106,449 Attack events and
+    #                           deliberately maps none of them, because attack
+    #                           micro is not a macro decision. Attacking is
+    #                           handled by the army state machine in helpers.py.
     "do_nothing",               # 0
     "train_probe",              # 1
     "build_pylon",              # 2
@@ -92,21 +109,22 @@ ACTION_NAMES: list[str] = [
     "train_immortal",           # 18
     "train_voidray",            # 19
     "train_carrier",            # 20
-    "train_high_templar",       # 21
-    "warp_in_zealot",           # 22
-    "warp_in_stalker",          # 23
-    "warp_in_high_templar",     # 24
-    "research_charge",          # 25
-    "research_warp_gate",       # 26
-    "upgrade_ground_weapons",   # 27
-    "upgrade_air_weapons",      # 28
-    "upgrade_shields",          # 29
-    "attack_enemy_base",        # 30
-    "train_adept",              # 31
-    "train_phoenix",            # 32
-    "train_colossus",           # 33
-    "warp_in_adept",            # 34
+    "warp_in_zealot",           # 21
+    "warp_in_stalker",          # 22
+    "warp_in_high_templar",     # 23
+    "research_charge",          # 24
+    "research_warp_gate",       # 25
+    "upgrade_ground_weapons",   # 26
+    "upgrade_air_weapons",      # 27
+    "upgrade_shields",          # 28
+    "train_adept",              # 29
+    "train_phoenix",            # 30
+    "train_colossus",           # 31
 ]
+
+# name -> action id. Use this instead of writing integer literals.
+ACTION_ID: dict[str, int] = {n: i for i, n in enumerate(ACTION_NAMES)}
+
 
 NUM_ACTIONS = len(ACTION_NAMES)
 
@@ -121,20 +139,18 @@ NUM_ACTIONS = len(ACTION_NAMES)
 # for the observed failure where the bot burned 68-80s of the opening choosing
 # train_probe at 15/15 supply while floating up to 850 minerals.
 ACTION_SUPPLY_COST = {
-    ACTION_NAMES.index("train_probe"):          1,
-    ACTION_NAMES.index("train_zealot"):         2,
-    ACTION_NAMES.index("train_stalker"):        2,
-    ACTION_NAMES.index("train_immortal"):       4,
-    ACTION_NAMES.index("train_voidray"):        4,
-    ACTION_NAMES.index("train_carrier"):        6,
-    ACTION_NAMES.index("train_high_templar"):   2,
-    ACTION_NAMES.index("train_adept"):          2,
-    ACTION_NAMES.index("train_phoenix"):        2,
-    ACTION_NAMES.index("train_colossus"):       6,
-    ACTION_NAMES.index("warp_in_zealot"):       2,
-    ACTION_NAMES.index("warp_in_stalker"):      2,
-    ACTION_NAMES.index("warp_in_high_templar"): 2,
-    ACTION_NAMES.index("warp_in_adept"):        2,
+    ACTION_ID["train_probe"]:          1,
+    ACTION_ID["train_zealot"]:         2,
+    ACTION_ID["train_stalker"]:        2,
+    ACTION_ID["train_immortal"]:       4,
+    ACTION_ID["train_voidray"]:        4,
+    ACTION_ID["train_carrier"]:        6,
+    ACTION_ID["train_adept"]:          2,
+    ACTION_ID["train_phoenix"]:        2,
+    ACTION_ID["train_colossus"]:       6,
+    ACTION_ID["warp_in_zealot"]:       2,
+    ACTION_ID["warp_in_stalker"]:      2,
+    ACTION_ID["warp_in_high_templar"]: 2,
 }
 
 # Supply values are integers, so a 0.5 tolerance absorbs float round-trip error

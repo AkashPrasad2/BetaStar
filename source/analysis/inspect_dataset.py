@@ -13,39 +13,11 @@ from collections import Counter
 
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 
-# Action names
-ACTIONS = [
-    "do_nothing",               # 0
-    "train_probe",              # 1
-    "build_pylon",              # 2
-    "build_gateway",            # 3
-    "build_cyberneticscore",    # 4
-    "build_assimilator",        # 5
-    "build_nexus",              # 6
-    "build_forge",              # 7
-    "build_stargate",           # 8
-    "build_robotics_facility",  # 9
-    "build_twilight_council",   # 10
-    "build_photon_cannon",      # 11
-    "build_fleet_beacon",       # 12
-    "build_templar_archive",    # 13
-    "train_zealot",             # 14
-    "train_stalker",            # 15
-    "train_immortal",           # 16
-    "train_voidray",            # 17
-    "train_carrier",            # 18
-    "train_high_templar",       # 19
-    "warp_in_zealot",           # 20
-    "warp_in_stalker",          # 21
-    "warp_in_high_templar",     # 22
-    "archon_warp",              # 23
-    "research_charge",          # 24
-    "research_warp_gate",       # 25
-    "upgrade_ground_weapons",   # 26
-    "upgrade_air_weapons",      # 27
-    "upgrade_shields",          # 28
-    "attack_enemy_base",        # 29
-]
+# Action names come from obs_spec, never a local copy: the private lists that
+# used to live here silently went stale when the action space changed.
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from obs_spec import ACTION_NAMES as ACTIONS   # noqa: E402
 
 # Feature names
 FEATURE_NAMES = [

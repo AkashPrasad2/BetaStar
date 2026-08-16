@@ -60,44 +60,10 @@ print("Only mapped abilities become training labels. Unmapped abilities are igno
 parser = ReplayParser(debug=False)
 EVENT_TO_ACTION = parser.EVENT_TO_ACTION
 
-# Action ID to name mapping (must stay in sync with ACTIONS in source/actions.py — 35 actions, 0-34)
-ACTION_NAMES = {
-    0: "do_nothing",
-    1: "train_probe",
-    2: "build_pylon",
-    3: "build_gateway",
-    4: "build_cyberneticscore",
-    5: "build_assimilator",
-    6: "build_nexus",
-    7: "build_forge",
-    8: "build_stargate",
-    9: "build_robotics_facility",
-    10: "build_twilight_council",
-    11: "build_photon_cannon",
-    12: "build_fleet_beacon",
-    13: "build_templar_archive",
-    14: "build_robotics_bay",
-    15: "build_shield_battery",
-    16: "train_zealot",
-    17: "train_stalker",
-    18: "train_immortal",
-    19: "train_voidray",
-    20: "train_carrier",
-    21: "train_high_templar",
-    22: "warp_in_zealot",
-    23: "warp_in_stalker",
-    24: "warp_in_high_templar",
-    25: "research_charge",
-    26: "research_warp_gate",
-    27: "upgrade_ground_weapons",
-    28: "upgrade_air_weapons",
-    29: "upgrade_shields",
-    30: "attack_enemy_base",
-    31: "train_adept",
-    32: "train_phoenix",
-    33: "train_colossus",
-    34: "warp_in_adept",
-}
+# Action names come from obs_spec, never a local copy: the private lists that
+# used to live here silently went stale when the action space changed.
+from obs_spec import ACTION_NAMES as _ACTION_LIST   # noqa: E402
+ACTION_NAMES = dict(enumerate(_ACTION_LIST))
 
 # Categorize all commands
 mapped_commands = []
