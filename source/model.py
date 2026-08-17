@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from pathlib import Path
 
 from action_mask import apply_legal_mask, apply_training_mask
-from obs_spec import OBS_SIZE, NUM_ACTIONS
+from obs_spec import OBS_SIZE, NUM_ACTIONS, ACTION_NAMES
 
 # ---------------------------------------------------------------------------
 # Config
@@ -48,9 +48,33 @@ LR = 3e-4
 VAL_SPLIT = 0.15
 SEED = 54
 
-# "accuracy" = save model with best validation accuracy
-# "loss" = save model with lowest validation loss
-MODEL_SELECTION = "accuracy"
+# Which validation metric decides the saved checkpoint.
+#
+#   "macro_f1" — mean of per-class F1 (default). Every action counts equally.
+#   "accuracy" — fraction of windows predicted correctly.
+#   "loss"     — the class-weighted cross-entropy.
+#
+# Accuracy is the wrong choice here and was the previous default. Labels are
+# dominated by do_nothing (42.8% of 193k windows) and train_probe (20.8%), so a
+# model that learns only those two scores ~63.5% while never building anything.
+# build_cyberneticscore is 0.45% of windows, meaning a checkpoint that NEVER
+# predicts a cybercore loses at most 0.45 accuracy points -- accuracy is close to
+# indifferent about the building that gates the entire midgame. That is exactly
+# the mode collapse observed in play: greedy argmax was do_nothing 89-99% of the
+# time and only temperature sampling made the bot functional.
+#
+# Macro-F1 averages per-class F1 unweighted, so build_cyberneticscore contributes
+# 1/32 = 3.1% of the score instead of 0.45% -- about 7x more leverage. F1 is the
+# harmonic mean of precision and recall, which collapses toward zero if EITHER is
+# near zero, so it cannot be gamed by never predicting a class (recall -> 0) or
+# by predicting it constantly (precision -> 0).
+MODEL_SELECTION = "macro_f1"
+
+# Classes with fewer than this many validation labels are left out of the macro
+# average. F1 measured on a handful of samples is mostly noise, and which rare
+# actions land in the val split is an accident of the replay-level split. Set to
+# 0 to include every class that appears at all.
+MACRO_F1_MIN_SUPPORT = 10
 
 # keep the decisions diverse (not applied during training, only inference)
 INFERENCE_TEMPERATURE = 1.5
@@ -310,9 +334,40 @@ def train_epoch(model, loader, optimizer, criterion, device):
 
 
 @torch.no_grad()
+def macro_f1_from_counts(tp, fp, fn, min_support: int = 0):
+    """
+    Per-class F1 and their unweighted mean.
+
+    Returns (macro_f1, per_class) where per_class maps class index ->
+    (f1, precision, recall, support). Classes with support below min_support are
+    reported but excluded from the mean; classes absent from the data entirely
+    are excluded outright rather than counted as zero, since otherwise the metric
+    would swing on whether a rare action happened to land in the val split.
+    """
+    per_class = {}
+    scores = []
+    for c in range(len(tp)):
+        support = int(tp[c] + fn[c])
+        if support == 0 and fp[c] == 0:
+            continue                      # class does not occur and is never predicted
+        precision = tp[c] / (tp[c] + fp[c]) if (tp[c] + fp[c]) else 0.0
+        recall = tp[c] / (tp[c] + fn[c]) if (tp[c] + fn[c]) else 0.0
+        f1 = (2 * precision * recall / (precision + recall)
+              if (precision + recall) else 0.0)
+        per_class[c] = (f1, precision, recall, support)
+        if support >= max(min_support, 1):
+            scores.append(f1)
+    return (sum(scores) / len(scores) if scores else 0.0), per_class
+
+
 def eval_epoch(model, loader, criterion, device):
+    """Returns (loss, accuracy, macro_f1, per_class_f1)."""
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
+    # Per-class confusion counts, accumulated on GPU then read once at the end.
+    tp = torch.zeros(NUM_ACTIONS, dtype=torch.long, device=device)
+    fp = torch.zeros(NUM_ACTIONS, dtype=torch.long, device=device)
+    fn = torch.zeros(NUM_ACTIONS, dtype=torch.long, device=device)
 
     for obs_pad, act_pad in loader:
         obs_pad = obs_pad.to(device)
@@ -344,7 +399,17 @@ def eval_epoch(model, loader, criterion, device):
         total += real.sum().item()
         total_loss += loss.item() * real.sum().item()
 
-    return total_loss / total, correct / total
+        # Confusion counts over real positions only.
+        p_real = preds[real]
+        y_real = flat_acts[real]
+        hit = p_real == y_real
+        tp += torch.bincount(y_real[hit], minlength=NUM_ACTIONS)
+        fp += torch.bincount(p_real[~hit], minlength=NUM_ACTIONS)
+        fn += torch.bincount(y_real[~hit], minlength=NUM_ACTIONS)
+
+    macro_f1, per_class = macro_f1_from_counts(
+        tp.tolist(), fp.tolist(), fn.tolist(), MACRO_F1_MIN_SUPPORT)
+    return total_loss / total, correct / total, macro_f1, per_class
 
 
 # ---------------------------------------------------------------------------
@@ -392,39 +457,50 @@ def train():
 
     Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)
 
-    if MODEL_SELECTION == "accuracy":
-        best_val_metric = 0.0
-        def is_better(new, best): return new > best
-    else:
-        best_val_metric = float('inf')
+    # Loss is minimized; accuracy and macro-F1 are maximized.
+    _LOWER_IS_BETTER = MODEL_SELECTION == "loss"
+    if _LOWER_IS_BETTER:
+        best_val_metric = float("inf")
         def is_better(new, best): return new < best
+    else:
+        best_val_metric = -1.0
+        def is_better(new, best): return new > best
 
     best_path = Path(CHECKPOINT_DIR) / "best_model.pt"
+    best_per_class = {}
 
+    print(f"\nSelecting checkpoints on: {MODEL_SELECTION}")
     print(f"\n{'Epoch':>6} {'Train Loss':>11} {'Train Acc':>10} "
-          f"{'Val Loss':>10} {'Val Acc':>9} {'LR':>10}")
-    print("-" * 65)
+          f"{'Val Loss':>10} {'Val Acc':>9} {'Val MacroF1':>12} {'LR':>10}")
+    print("-" * 78)
 
     for epoch in range(1, EPOCHS + 1):
         train_loss, train_acc = train_epoch(
             model, train_loader, optimizer, criterion, device)
-        val_loss, val_acc = eval_epoch(
+        val_loss, val_acc, val_f1, per_class = eval_epoch(
             model, val_loader, criterion, device)
         scheduler.step()
 
         lr = scheduler.get_last_lr()[0]
         print(f"{epoch:>6} {train_loss:>11.4f} {train_acc:>10.3%} "
-              f"{val_loss:>10.4f} {val_acc:>9.3%} {lr:>10.2e}")
+              f"{val_loss:>10.4f} {val_acc:>9.3%} {val_f1:>12.4f} {lr:>10.2e}")
 
-        current_metric = val_acc if MODEL_SELECTION == "accuracy" else val_loss
+        current_metric = {
+            "accuracy": val_acc,
+            "macro_f1": val_f1,
+            "loss":     val_loss,
+        }[MODEL_SELECTION]
 
         if is_better(current_metric, best_val_metric):
             best_val_metric = current_metric
+            best_per_class = per_class
             torch.save({
                 "epoch":           epoch,
                 "model_state":     model.state_dict(),
                 "val_loss":        val_loss,
                 "val_acc":         val_acc,
+                "val_macro_f1":    val_f1,
+                "selection":       MODEL_SELECTION,
                 "obs_size":        OBS_SIZE,
                 "num_actions":     NUM_ACTIONS,
                 "d_model":         D_MODEL,
@@ -433,17 +509,30 @@ def train():
                 "dim_feedforward":  DIM_FEEDFORWARD,
                 "max_seq_len":     MAX_SEQ_LEN,
             }, best_path)
-            if MODEL_SELECTION == "accuracy":
-                print(
-                    f"         ^ new best (acc={val_acc:.3%}) saved to {best_path}")
-            else:
-                print(
-                    f"         ^ new best (loss={val_loss:.4f}) saved to {best_path}")
+            shown = (f"{best_val_metric:.3%}" if MODEL_SELECTION == "accuracy"
+                     else f"{best_val_metric:.4f}")
+            print(f"         ^ new best ({MODEL_SELECTION}={shown})"
+                  f" saved to {best_path}")
 
-    if MODEL_SELECTION == "accuracy":
-        print(f"\nTraining complete. Best val accuracy: {best_val_metric:.3%}")
-    else:
-        print(f"\nTraining complete. Best val loss: {best_val_metric:.4f}")
+    shown = (f"{best_val_metric:.3%}" if MODEL_SELECTION == "accuracy"
+             else f"{best_val_metric:.4f}")
+    print(f"\nTraining complete. Best val {MODEL_SELECTION}: {shown}")
+
+    # Per-class report for the saved checkpoint. This is the diagnostic that
+    # accuracy hid: an action with F1 near zero is one the bot will essentially
+    # never take, no matter how good the headline number looks.
+    if best_per_class:
+        print(f"\n{'action':<26}{'F1':>8}{'prec':>8}{'recall':>8}{'support':>9}")
+        print("-" * 59)
+        rows = sorted(best_per_class.items(), key=lambda kv: kv[1][0])
+        for cid, (f1, prec, rec, sup) in rows:
+            flag = ""
+            if sup < MACRO_F1_MIN_SUPPORT:
+                flag = "  (excluded, low support)"
+            elif f1 < 0.05:
+                flag = "  <-- effectively never predicted"
+            name = ACTION_NAMES[cid] if cid < len(ACTION_NAMES) else str(cid)
+            print(f"{name:<26}{f1:>8.3f}{prec:>8.3f}{rec:>8.3f}{sup:>9}{flag}")
     return model
 
 
