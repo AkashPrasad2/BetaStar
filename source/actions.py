@@ -52,12 +52,45 @@ def _train_probe(bot: BotAI) -> ActionResult:
     return ActionResult.ISSUED
 
 
+def _research(
+    bot: BotAI,
+    building: UnitTypeId,
+    ability: AbilityId,
+    upgrade: UpgradeId,
+) -> ActionResult:
+    """Issue one research command and report why it could not be issued."""
+    structures = bot.structures(building).ready
+    if not structures:
+        return ActionResult.NO_PREREQ
+    if upgrade in bot.state.upgrades or bot.already_pending_upgrade(upgrade) > 0:
+        return ActionResult.SUPPRESSED
+    if not structures.idle:
+        return ActionResult.NO_PRODUCTION
+    if not bot.can_afford(ability):
+        return ActionResult.UNAFFORDABLE
+    structures.idle.first(ability)
+    return ActionResult.ISSUED
+
+
+def _research_next_level(
+    bot: BotAI,
+    building: UnitTypeId,
+    levels: tuple[tuple[UpgradeId, AbilityId], ...],
+) -> ActionResult:
+    """Research the first incomplete level in an ordered upgrade chain."""
+    for upgrade, ability in levels:
+        if upgrade in bot.state.upgrades:
+            continue
+        return _research(bot, building, ability, upgrade)
+    return ActionResult.SUPPRESSED
+
+
 async def execute_action(action_id: int, bot: BotAI):
     """Execute an action. All branches are fully guarded — no .first on empty collections."""
     action_name = ACTIONS[action_id]
 
     if action_name == "do_nothing":
-        pass
+        return ActionResult.NO_OP
 
     elif action_name == "train_probe":
         return _train_probe(bot)
@@ -129,65 +162,44 @@ async def execute_action(action_id: int, bot: BotAI):
         return await warp_in_unit(bot, UnitTypeId.HIGHTEMPLAR, AbilityId.WARPGATETRAIN_HIGHTEMPLAR, requires=UnitTypeId.TEMPLARARCHIVE)
 
     elif action_name == "research_charge":
-        if (bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready
-                and bot.can_afford(AbilityId.RESEARCH_CHARGE)):
-            bot.structures(UnitTypeId.TWILIGHTCOUNCIL).ready.first(
-                AbilityId.RESEARCH_CHARGE)
+        return _research(
+            bot, UnitTypeId.TWILIGHTCOUNCIL,
+            AbilityId.RESEARCH_CHARGE, UpgradeId.CHARGE)
 
     elif action_name == "research_warp_gate":
-        if (bot.structures(UnitTypeId.CYBERNETICSCORE).ready
-                and bot.can_afford(AbilityId.RESEARCH_WARPGATE)):
-            bot.structures(UnitTypeId.CYBERNETICSCORE).ready.first(
-                AbilityId.RESEARCH_WARPGATE)
+        return _research(
+            bot, UnitTypeId.CYBERNETICSCORE,
+            AbilityId.RESEARCH_WARPGATE, UpgradeId.WARPGATERESEARCH)
 
     elif action_name == "upgrade_ground_weapons":
-        # FIX: check idle before calling .first
-        if bot.structures(UnitTypeId.FORGE).ready.idle:
-            forge = bot.structures(UnitTypeId.FORGE).ready.idle.first
-            if bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1) == 0 and \
-               UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1):
-                    forge.research(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1)
-            elif bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2) == 0 and \
-                    UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL2):
-                    forge.research(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2)
-            elif bot.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3) == 0 and \
-                    UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL3):
-                    forge.research(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3)
+        return _research_next_level(bot, UnitTypeId.FORGE, (
+            (UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
+             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1),
+            (UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2,
+             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL2),
+            (UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3,
+             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL3),
+        ))
 
     elif action_name == "upgrade_air_weapons":
-        if bot.structures(UnitTypeId.CYBERNETICSCORE).ready.idle:
-            cyber = bot.structures(UnitTypeId.CYBERNETICSCORE).ready.idle.first
-            if bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL1) == 0 and \
-               UpgradeId.PROTOSSAIRWEAPONSLEVEL1 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL1):
-                    cyber.research(UpgradeId.PROTOSSAIRWEAPONSLEVEL1)
-            elif bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL2) == 0 and \
-                    UpgradeId.PROTOSSAIRWEAPONSLEVEL2 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL2):
-                    cyber.research(UpgradeId.PROTOSSAIRWEAPONSLEVEL2)
-            elif bot.already_pending_upgrade(UpgradeId.PROTOSSAIRWEAPONSLEVEL3) == 0 and \
-                    UpgradeId.PROTOSSAIRWEAPONSLEVEL3 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL3):
-                    cyber.research(UpgradeId.PROTOSSAIRWEAPONSLEVEL3)
+        return _research_next_level(bot, UnitTypeId.CYBERNETICSCORE, (
+            (UpgradeId.PROTOSSAIRWEAPONSLEVEL1,
+             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL1),
+            (UpgradeId.PROTOSSAIRWEAPONSLEVEL2,
+             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL2),
+            (UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
+             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL3),
+        ))
 
     elif action_name == "upgrade_shields":
-        if bot.structures(UnitTypeId.FORGE).ready.idle:
-            forge = bot.structures(UnitTypeId.FORGE).ready.idle.first
-            if bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL1) == 0 and \
-               UpgradeId.PROTOSSSHIELDSLEVEL1 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL1):
-                    forge.research(UpgradeId.PROTOSSSHIELDSLEVEL1)
-            elif bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL2) == 0 and \
-                    UpgradeId.PROTOSSSHIELDSLEVEL2 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL2):
-                    forge.research(UpgradeId.PROTOSSSHIELDSLEVEL2)
-            elif bot.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL3) == 0 and \
-                    UpgradeId.PROTOSSSHIELDSLEVEL3 not in bot.state.upgrades:
-                if bot.can_afford(AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3):
-                    forge.research(UpgradeId.PROTOSSSHIELDSLEVEL3)
+        return _research_next_level(bot, UnitTypeId.FORGE, (
+            (UpgradeId.PROTOSSSHIELDSLEVEL1,
+             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL1),
+            (UpgradeId.PROTOSSSHIELDSLEVEL2,
+             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL2),
+            (UpgradeId.PROTOSSSHIELDSLEVEL3,
+             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3),
+        ))
 
     elif action_name == "train_adept":
         return _train(bot, UnitTypeId.ADEPT, UnitTypeId.GATEWAY, requires=UnitTypeId.CYBERNETICSCORE)

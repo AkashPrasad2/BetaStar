@@ -82,6 +82,7 @@ class ActionResult(Enum):
     NO_PREREQ = "no_prereq"           # missing powered pylon / townhall / tech
     NO_TARGET = "no_target"           # no expansion site or free geyser
     NO_PRODUCTION = "no_production"   # no idle production building
+    NO_OP = "no_op"                   # intentional do_nothing action
     NOT_LABELLED = "not_labelled"     # path not yet instrumented
 
 
@@ -482,7 +483,7 @@ async def set_production_rally_points(bot: BotAI):
                 building(AbilityId.RALLY_UNITS, rally_point)
                 bot.rally_tags_set.add(building.tag)
                 print(f"[{bot.time:.0f}s] Rally point set for {unit_type.name} "
-                      f"→ {rally_point}")
+                      f"-> {rally_point}")
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +590,7 @@ async def _do_rally(bot: BotAI, army):
         for unit in idle_army:
             unit.attack(staging)  # attack-move so they engage anything nearby
         print(
-            f"[{bot.time:.0f}s] ARMY: Rallying {len(idle_army)} idle unit(s) → {staging}")
+            f"[{bot.time:.0f}s] ARMY: Rallying {len(idle_army)} idle unit(s) -> {staging}")
 
 
 def _do_defend(bot: BotAI, army):
@@ -656,7 +657,7 @@ def _do_attack(bot: BotAI, army):
 def _issue_attack(bot: BotAI, army, target_pos: Point2, reason: str):
     """Issue attack-move to all army units."""
     print(f"[{bot.time:.0f}s] ARMY [{bot.army_state.value}]: "
-          f"{army.amount} unit(s) → {target_pos} ({reason})")
+          f"{army.amount} unit(s) -> {target_pos} ({reason})")
     for unit in army:
         unit.attack(target_pos)
 

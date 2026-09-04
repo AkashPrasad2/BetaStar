@@ -1,8 +1,4 @@
-from sc2 import maps
 from sc2.bot_ai import BotAI
-from sc2.data import Difficulty, Race
-from sc2.main import run_game
-from sc2.player import Bot, Computer
 from sc2.ids.unit_typeid import UnitTypeId
 
 import math
@@ -31,11 +27,29 @@ LOG_DIR = r"C:\dev\BetaStar\logs"
 
 class ProtossBot(BotAI):
 
-    def __init__(self):
+    def __init__(
+        self,
+        checkpoint_path: str = CHECKPOINT_PATH,
+        device: str = DEVICE,
+        temperature: float | None = None,
+        enable_decision_log: bool = ENABLE_DECISION_LOG,
+        log_dir: str = LOG_DIR,
+        goal_deadline: float | None = None,
+    ):
         super().__init__()
+        self.device = device
+        self.temperature = temperature
+        self.goal_deadline = goal_deadline
         self.obs_wrapper = ObservationWrapper()
-        self.model = load_model(CHECKPOINT_PATH, device=DEVICE)
+        self.model = load_model(checkpoint_path, device=device)
         self.obs_history: list = []  # rolling window of observation vectors
+
+        # Baseline/RL episode measurements. These are observed on every SC2
+        # step (not just every 4-second policy decision), so milestone timing is
+        # as precise as the game-step interval permits.
+        self.milestone_times: dict[str, float] = {}
+        self.final_game_time: float = 0.0
+        self.final_game_result = None
 
         # Next game-time (seconds) at which to query the model. Scheduled on
         # game time rather than by counting on_step iterations: the old
@@ -77,9 +91,45 @@ class ProtossBot(BotAI):
 
         # Per-decision introspection (None when disabled)
         self.decision_log = (
-            DecisionLogger(LOG_DIR) if ENABLE_DECISION_LOG else None)
+            DecisionLogger(log_dir) if enable_decision_log else None)
+
+    def _update_milestones(self):
+        """Record the first observed completion time for the opening goal."""
+        milestones = {
+            "pylon": UnitTypeId.PYLON,
+            "gateway": UnitTypeId.GATEWAY,
+            "cybernetics_core": UnitTypeId.CYBERNETICSCORE,
+        }
+        for name, unit_type in milestones.items():
+            if name not in self.milestone_times and self.structures(unit_type).ready:
+                self.milestone_times[name] = float(self.time)
+
+    def episode_summary(self, game_result=None) -> dict:
+        """Return JSON-serializable measurements for baseline/RL tooling."""
+        result = game_result if game_result is not None else self.final_game_result
+        result_name = getattr(result, "name", str(result) if result is not None else None)
+        deadline = self.goal_deadline
+        required = ("pylon", "gateway", "cybernetics_core")
+        goal_met = all(
+            name in self.milestone_times
+            and (deadline is None or self.milestone_times[name] <= deadline)
+            for name in required
+        )
+        return {
+            "result": result_name,
+            "game_time_seconds": round(float(self.final_game_time), 2),
+            "goal_deadline_seconds": deadline,
+            "goal_met": goal_met,
+            "milestone_times": {
+                name: round(value, 2)
+                for name, value in self.milestone_times.items()
+            },
+        }
 
     async def on_step(self, iteration: int):
+        self.final_game_time = float(self.time)
+        self._update_milestones()
+
         # Always-on behaviours
         await self.distribute_workers()
         await auto_saturate_assimilators(self)
@@ -115,15 +165,22 @@ class ProtossBot(BotAI):
             self.obs_history = self.obs_history[-MAX_CONTEXT:]
 
         if self.decision_log is not None:
+            predict_kwargs = {
+                "device": self.device,
+                "return_diagnostics": True,
+            }
+            if self.temperature is not None:
+                predict_kwargs["temperature"] = self.temperature
             action_id, diagnostics = predict_action(
-                self.model, self.obs_history, device=DEVICE,
-                return_diagnostics=True,
-            )
+                self.model, self.obs_history, **predict_kwargs)
             self.decision_log.log_decision(
                 self, iteration, obs, action_id, diagnostics)
         else:
+            predict_kwargs = {"device": self.device}
+            if self.temperature is not None:
+                predict_kwargs["temperature"] = self.temperature
             action_id = predict_action(
-                self.model, self.obs_history, device=DEVICE)
+                self.model, self.obs_history, **predict_kwargs)
 
         print(
             f"[{self.time:.1f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
@@ -135,12 +192,11 @@ class ProtossBot(BotAI):
             self.decision_log.note_execution(result)
 
     async def on_end(self, game_result):
+        self.final_game_result = game_result
+        self.final_game_time = max(self.final_game_time, float(self.time))
+        self._update_milestones()
         if self.decision_log is not None:
-            self.decision_log.finish(self, game_result)
-
-
-run_game(
-    maps.get("AbyssalReefLE"),
-    [Bot(Race.Protoss, ProtossBot()), Computer(Race.Zerg, Difficulty.Easy)],
-    realtime=False,
-)
+            self.decision_log.finish(
+                self, game_result,
+                episode_summary=self.episode_summary(game_result),
+            )

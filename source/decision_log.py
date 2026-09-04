@@ -307,7 +307,8 @@ class DecisionLogger:
         except Exception:
             self._pending = None
 
-    def finish(self, bot: BotAI | None = None, game_result=None):
+    def finish(self, bot: BotAI | None = None, game_result=None,
+               episode_summary: dict | None = None):
         """Resolve the last decision, write the summary, close the file."""
         if not self.enabled:
             return
@@ -324,6 +325,18 @@ class DecisionLogger:
         out("=" * 68)
         if game_result is not None:
             out(f"  Result: {game_result}")
+        if episode_summary is not None:
+            self._write({"_episode": episode_summary})
+            deadline = episode_summary.get("goal_deadline_seconds")
+            if deadline is not None:
+                out(f"  Goal by {deadline:g}s: "
+                    f"{'MET' if episode_summary.get('goal_met') else 'MISSED'}")
+            times = episode_summary.get("milestone_times", {})
+            if times:
+                formatted = ", ".join(
+                    f"{name}={seconds:.1f}s"
+                    for name, seconds in times.items())
+                out(f"  Milestones: {formatted}")
         out(f"  Decisions: {self._n}")
         if self._n:
             idle = self._chosen.get("do_nothing", 0)
@@ -365,7 +378,7 @@ class DecisionLogger:
                 out(f"    {reason:<18} {n:>5}  ({100.0 * n / total_reasons:>5.1f}%)")
 
             failures = {a: rs for a, rs in self._reason_by_action.items()
-                        if any(r not in ("issued", "not_labelled")
+                        if any(r not in ("issued", "no_op", "not_labelled")
                                for r in rs)}
             if failures:
                 out()
@@ -373,11 +386,12 @@ class DecisionLogger:
                 for action in sorted(failures,
                                      key=lambda a: -sum(
                                          n for r, n in failures[a].items()
-                                         if r not in ("issued", "not_labelled"))):
+                                          if r not in ("issued", "no_op",
+                                                       "not_labelled"))):
                     parts = ", ".join(
                         f"{r}={n}" for r, n in
                         sorted(failures[action].items(), key=lambda kv: -kv[1])
-                        if r not in ("issued", "not_labelled"))
+                        if r not in ("issued", "no_op", "not_labelled"))
                     if parts:
                         out(f"    {action:<26} {parts}")
 
