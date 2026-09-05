@@ -35,13 +35,19 @@ class ProtossBot(BotAI):
         enable_decision_log: bool = ENABLE_DECISION_LOG,
         log_dir: str = LOG_DIR,
         goal_deadline: float | None = None,
+        policy_model=None,
     ):
         super().__init__()
         self.device = device
         self.temperature = temperature
         self.goal_deadline = goal_deadline
         self.obs_wrapper = ObservationWrapper()
-        self.model = load_model(checkpoint_path, device=device)
+        # Evaluation loads from disk. RL supplies the optimizer-owned policy
+        # directly so every episode uses the same in-memory parameters.
+        self.model = (
+            policy_model if policy_model is not None
+            else load_model(checkpoint_path, device=device)
+        )
         self.obs_history: list = []  # rolling window of observation vectors
 
         # Baseline/RL episode measurements. These are observed on every SC2
@@ -126,6 +132,28 @@ class ProtossBot(BotAI):
             },
         }
 
+    def _before_policy_decision(self, obs: list[float]) -> None:
+        """Extension hook used by rollout collectors before sampling."""
+
+    def _select_policy_action(self):
+        """Sample from the IL policy; the PPO bot overrides this method."""
+        predict_kwargs = {
+            "device": self.device,
+            "return_diagnostics": self.decision_log is not None,
+        }
+        if self.temperature is not None:
+            predict_kwargs["temperature"] = self.temperature
+        selected = predict_action(self.model, self.obs_history, **predict_kwargs)
+        if self.decision_log is not None:
+            return selected
+        return selected, {}
+
+    def _after_action_execution(self, action_id: int, result) -> None:
+        """Extension hook used by rollout collectors after execution."""
+
+    def _on_policy_episode_end(self, game_result) -> None:
+        """Extension hook used to settle the final rollout transition."""
+
     async def on_step(self, iteration: int):
         self.final_game_time = float(self.time)
         self._update_milestones()
@@ -164,23 +192,12 @@ class ProtossBot(BotAI):
         if len(self.obs_history) > MAX_CONTEXT:
             self.obs_history = self.obs_history[-MAX_CONTEXT:]
 
+        self._before_policy_decision(obs)
+        action_id, diagnostics = self._select_policy_action()
+
         if self.decision_log is not None:
-            predict_kwargs = {
-                "device": self.device,
-                "return_diagnostics": True,
-            }
-            if self.temperature is not None:
-                predict_kwargs["temperature"] = self.temperature
-            action_id, diagnostics = predict_action(
-                self.model, self.obs_history, **predict_kwargs)
             self.decision_log.log_decision(
                 self, iteration, obs, action_id, diagnostics)
-        else:
-            predict_kwargs = {"device": self.device}
-            if self.temperature is not None:
-                predict_kwargs["temperature"] = self.temperature
-            action_id = predict_action(
-                self.model, self.obs_history, **predict_kwargs)
 
         print(
             f"[{self.time:.1f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
@@ -190,11 +207,13 @@ class ProtossBot(BotAI):
         result = await actions.execute_action(action_id, self)
         if self.decision_log is not None:
             self.decision_log.note_execution(result)
+        self._after_action_execution(action_id, result)
 
     async def on_end(self, game_result):
         self.final_game_result = game_result
         self.final_game_time = max(self.final_game_time, float(self.time))
         self._update_milestones()
+        self._on_policy_episode_end(game_result)
         if self.decision_log is not None:
             self.decision_log.finish(
                 self, game_result,

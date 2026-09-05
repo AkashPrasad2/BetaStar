@@ -79,21 +79,7 @@ MACRO_F1_MIN_SUPPORT = 10
 # keep the decisions diverse (not applied during training, only inference)
 INFERENCE_TEMPERATURE = 1.5
 
-# Cap context window at inference to bound latency.
-#
-# Training feeds whole replays, so a window at index k gets positional-encoding
-# position k. Inference matches that exactly until the history exceeds
-# MAX_CONTEXT, after which truncation pins the current window to position
-# MAX_CONTEXT-1 and PE decorrelates from game time -- a pairing that appears
-# nowhere in training.
-#
-# At 256 that boundary hit at 17 minutes, inside the decisive part of most games.
-# 512 windows = 2048s = 34 minutes, which covers essentially every game in the
-# corpus. It is also the exact point where the O(T^2) attention cost equals all
-# the linear (projection + FFN) cost for this model size, so it stays cheap:
-# ~1.1 GFLOP per decision against a 4s budget.
-#
-# Must stay <= MAX_SEQ_LEN (positional encoding capacity).
+# Cap context window at inference to bound latency. 512 windows is ~34 minutes
 MAX_CONTEXT = 512
 
 
@@ -146,17 +132,16 @@ class ProtossTransformerModel(nn.Module):
         super().__init__()
         self.d_model = d_model
 
-        # Project flat observation to embedding space
+        # encode input vector to 128
         self.input_proj = nn.Sequential(
             nn.Linear(obs_size, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
         )
 
-        # Sinusoidal positional encoding
         self.pos_encoding = SinusoidalPositionalEncoding(d_model, max_seq_len)
 
-        # Causal transformer (using TransformerEncoder with causal mask)
+        # Causal transformer with masking
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -170,7 +155,6 @@ class ProtossTransformerModel(nn.Module):
             encoder_layer, num_layers=num_layers
         )
 
-        # Output head
         self.output_head = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, num_actions),
@@ -185,14 +169,14 @@ class ProtossTransformerModel(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: (B, T, obs_size) — sequence of observations
         Returns:
-            logits: (B, T, num_actions)
+            hidden states: (B, T, d_model)
         """
-        B, T, _ = x.shape
+        _, T, _ = x.shape
 
         # Project to embedding space
         h = self.input_proj(x)              # (B, T, d_model)
@@ -208,8 +192,11 @@ class ProtossTransformerModel(nn.Module):
         # Apply transformer with causal masking
         h = self.transformer(h, mask=causal_mask, is_causal=True)
 
-        # Output logits
-        return self.output_head(h)          # (B, T, num_actions)
+        return h
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return action logits for every observation in the sequence."""
+        return self.output_head(self.encode(x))
 
 
 # ---------------------------------------------------------------------------
