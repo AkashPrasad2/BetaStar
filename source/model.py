@@ -28,11 +28,6 @@ from obs_spec import OBS_SIZE, NUM_ACTIONS, ACTION_NAMES
 DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
 CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
 
-# OBS_SIZE comes from obs_spec, the single source of truth for the layout.
-# NUM_ACTIONS comes from obs_spec.ACTION_NAMES, the single source of truth. It was
-# hardcoded to 35 here, which would have silently disagreed with the mask and the
-# parser the moment an action was added or removed.
-
 # Transformer hyper-params
 D_MODEL = 128
 NHEAD = 4
@@ -49,31 +44,14 @@ VAL_SPLIT = 0.15
 SEED = 54
 
 # Which validation metric decides the saved checkpoint.
-#
 #   "macro_f1" — mean of per-class F1 (default). Every action counts equally.
 #   "accuracy" — fraction of windows predicted correctly.
 #   "loss"     — the class-weighted cross-entropy.
-#
-# Accuracy is the wrong choice here and was the previous default. Labels are
-# dominated by do_nothing (42.8% of 193k windows) and train_probe (20.8%), so a
-# model that learns only those two scores ~63.5% while never building anything.
-# build_cyberneticscore is 0.45% of windows, meaning a checkpoint that NEVER
-# predicts a cybercore loses at most 0.45 accuracy points -- accuracy is close to
-# indifferent about the building that gates the entire midgame. That is exactly
-# the mode collapse observed in play: greedy argmax was do_nothing 89-99% of the
-# time and only temperature sampling made the bot functional.
-#
 # Macro-F1 averages per-class F1 unweighted, so build_cyberneticscore contributes
-# 1/32 = 3.1% of the score instead of 0.45% -- about 7x more leverage. F1 is the
-# harmonic mean of precision and recall, which collapses toward zero if EITHER is
-# near zero, so it cannot be gamed by never predicting a class (recall -> 0) or
-# by predicting it constantly (precision -> 0).
+# 1/32 = 3.1% of the score instead of 0.45% -- about 7x more leverage.
 MODEL_SELECTION = "macro_f1"
 
-# Classes with fewer than this many validation labels are left out of the macro
-# average. F1 measured on a handful of samples is mostly noise, and which rare
-# actions land in the val split is an accident of the replay-level split. Set to
-# 0 to include every class that appears at all.
+# Classes with fewer than this many validation labels are left out of the macro average
 MACRO_F1_MIN_SUPPORT = 10
 
 # keep the decisions diverse (not applied during training, only inference)
@@ -84,9 +62,10 @@ MAX_CONTEXT = 512
 
 
 # ---------------------------------------------------------------------------
-# Positional Encoding
+# Model
 # ---------------------------------------------------------------------------
 
+# Sinusoidal pos encoding for transformer: bounded values between -1 and 1, and better computations with trig identities
 class SinusoidalPositionalEncoding(nn.Module):
     """Fixed sinusoidal positional encoding (Vaswani et al. 2017)."""
 
@@ -107,13 +86,9 @@ class SinusoidalPositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1)]
 
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
 class ProtossTransformerModel(nn.Module):
     """
-    Causal (decoder-only) transformer for sequential action prediction.
+    Causal transformer for sequential action prediction.
     Takes a sequence of game-state observations and predicts an action at
     each timestep, attending only to the current and past observations.
     """
@@ -130,7 +105,6 @@ class ProtossTransformerModel(nn.Module):
         max_seq_len:     int = MAX_SEQ_LEN,
     ):
         super().__init__()
-        self.d_model = d_model
 
         # encode input vector to 128
         self.input_proj = nn.Sequential(
