@@ -9,14 +9,15 @@ This script shows exactly what happens when a replay is parsed into training dat
 - Final action distribution in the training data
 """
 import sc2reader
-from sc2reader.events import BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent
 import numpy as np
 import sys
 import os
 
 # Add parent directory to path to import replay_parser
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from replay_parser import ReplayParser, GRID_INTERVAL_SECONDS, OBS_SIZE
+from replay_parser import (
+    ReplayParser, GRID_INTERVAL_SECONDS, OBS_SIZE, is_command_event,
+)
 
 # Load the same replay
 replay_path = r"C:\dev\BetaStar\replays\raw\Railgan v ShaDoWn - Abyssal Reef LE.SC2Replay"
@@ -43,7 +44,7 @@ print("=" * 120)
 # Collect all command events from replay
 all_commands = []
 for event in replay.events:
-    if isinstance(event, (BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent)):
+    if is_command_event(event):
         if event.player.pid == protoss_player.pid:
             all_commands.append((event.second, event.ability_name))
 

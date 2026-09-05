@@ -105,6 +105,9 @@ class ProtossTransformerModel(nn.Module):
         max_seq_len:     int = MAX_SEQ_LEN,
     ):
         super().__init__()
+        # Used by the PPO actor-critic wrapper to size its value head. This is
+        # architecture metadata only; it adds no checkpoint parameters.
+        self.d_model = d_model
 
         # encode input vector to 128
         self.input_proj = nn.Sequential(

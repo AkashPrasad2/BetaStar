@@ -29,11 +29,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from obs_spec import ACTION_NAMES, DECISION_INTERVAL_SECONDS, OBS_SIZE  # noqa: E402
 from replay_parser import (  # noqa: E402
     BUILD_COMMAND_TO_STRUCTURE,
-    COMMAND_EVENTS,
     ReplayParser,
     STRUCTURE_NAME_MAP,
     MIN_REPLAY_BUILD,
     calibrate_fps,
+    is_command_event,
 )
 
 
@@ -159,7 +159,7 @@ def analyze_replay(
 
     orders: dict[str, list[float]] = defaultdict(list)
     for event in replay.events:
-        if not isinstance(event, COMMAND_EVENTS):
+        if not is_command_event(event):
             continue
         owner = getattr(event, "player", None)
         if owner is None or owner.pid != pid:

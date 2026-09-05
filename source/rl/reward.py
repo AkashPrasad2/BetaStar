@@ -16,6 +16,7 @@ class MilestoneReward:
     deadline: float
     started_reward: float
     completed_reward: float
+    required_phase: str = "completed"
 
 
 @dataclass(frozen=True)
@@ -25,18 +26,27 @@ class OpeningRewardConfig:
     milestones: tuple[MilestoneReward, ...]
     success_bonus: float = 2.0
     failure_penalty: float = -1.0
-    execution_failure_penalty: float = -0.02
+    execution_failure_penalty: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-def default_opening_reward(deadline: float = 180.0) -> OpeningRewardConfig:
-    """Reward the prerequisite chain more strongly as it advances."""
+def default_opening_reward() -> OpeningRewardConfig:
+    """Data-informed targets for the one-gate expansion opening.
+
+    These deadlines are based on the MaNa-v-Solar reference sequence plus
+    roughly 8-15 seconds of slack. The Nexus is only required to be started:
+    its reference completion (219s) occurs after the Cyber Core objective.
+    """
     return OpeningRewardConfig(milestones=(
-        MilestoneReward("pylon", deadline, 0.05, 0.15),
-        MilestoneReward("gateway", deadline, 0.10, 0.30),
-        MilestoneReward("cybernetics_core", deadline, 0.20, 0.60),
+        MilestoneReward("pylon", 60.0, 0.05, 0.15),
+        MilestoneReward("gateway", 132.0, 0.10, 0.30),
+        MilestoneReward("assimilator", 108.0, 0.05, 0.15),
+        MilestoneReward(
+            "nexus", 136.0, 0.20, 0.0, required_phase="started"
+        ),
+        MilestoneReward("cybernetics_core", 200.0, 0.20, 0.60),
     ))
 
 
@@ -53,6 +63,8 @@ class OpeningSnapshot:
 _UNIT_TYPES = {
     "pylon": UnitTypeId.PYLON,
     "gateway": UnitTypeId.GATEWAY,
+    "assimilator": UnitTypeId.ASSIMILATOR,
+    "nexus": UnitTypeId.NEXUS,
     "cybernetics_core": UnitTypeId.CYBERNETICSCORE,
 }
 
@@ -65,9 +77,12 @@ def snapshot_opening_state(bot) -> OpeningSnapshot:
         ready_count = bot.structures(unit_type).ready.amount
         any_count = bot.structures(unit_type).amount
         pending = float(bot.already_pending(unit_type))
-        if any_count > 0 or pending > 0:
+        # The starting Nexus is baseline state. For this milestone, "started"
+        # means an expansion has been ordered and "ready" means two townhalls.
+        target_count = 2 if name == "nexus" else 1
+        if any_count >= target_count or pending > 0:
             started.add(name)
-        if ready_count > 0:
+        if ready_count >= target_count:
             ready.add(name)
     return OpeningSnapshot(
         time_seconds=float(bot.time),
@@ -96,6 +111,7 @@ class OpeningRewardTracker:
         self.finalized = False
         self.seen_started: set[str] = set()
         self.seen_completed: set[str] = set()
+        self.started_times: dict[str, float] = {}
         self.completion_times: dict[str, float] = {}
         self.total_reward = 0.0
         self.breakdown: dict[str, float] = {}
@@ -106,6 +122,9 @@ class OpeningRewardTracker:
         self.initialized = True
         self.seen_started = set(snapshot.started)
         self.seen_completed = set(snapshot.ready)
+        self.started_times = {
+            name: snapshot.time_seconds for name in snapshot.started
+        }
         self.completion_times = {
             name: snapshot.completion_times.get(name, snapshot.time_seconds)
             for name in snapshot.ready
@@ -141,6 +160,7 @@ class OpeningRewardTracker:
             name = milestone.name
             if name in snapshot.started and name not in self.seen_started:
                 self.seen_started.add(name)
+                self.started_times[name] = snapshot.time_seconds
                 reward += self._add(
                     f"{name}:started", milestone.started_reward)
 
@@ -154,10 +174,23 @@ class OpeningRewardTracker:
 
         if terminal and not self.finalized:
             self.finalized = True
+            def milestone_met(milestone: MilestoneReward) -> bool:
+                if milestone.required_phase == "started":
+                    return (
+                        milestone.name in snapshot.started
+                        and self.started_times.get(
+                            milestone.name, float("inf"))
+                        <= milestone.deadline
+                    )
+                return (
+                    milestone.name in snapshot.ready
+                    and self.completion_times.get(
+                        milestone.name, float("inf"))
+                    <= milestone.deadline
+                )
+
             self.goal_met = all(
-                milestone.name in snapshot.ready
-                and self.completion_times.get(
-                    milestone.name, float("inf")) <= milestone.deadline
+                milestone_met(milestone)
                 for milestone in self.config.milestones
             )
             terminal_reward = (

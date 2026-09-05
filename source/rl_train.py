@@ -11,10 +11,15 @@ from pathlib import Path
 import torch
 
 from episode import DIFFICULTIES, EpisodeConfig, run_episode
-from model import INFERENCE_TEMPERATURE
 from protoss_bot import CHECKPOINT_PATH, LOG_DIR
-from rl.bot import PPOBot
-from rl.ppo import ActorCritic, PPOConfig, PPOTrainer, frozen_policy_copy
+from rl.bot import OPENING_STRUCTURE_LIMITS, PPOBot
+from rl.ppo import (
+    DEFAULT_PPO_TEMPERATURE,
+    ActorCritic,
+    PPOConfig,
+    PPOTrainer,
+    frozen_policy_copy,
+)
 from rl.reward import OpeningRewardConfig, default_opening_reward
 
 
@@ -23,17 +28,17 @@ DEFAULT_OUTPUT = r"C:\dev\BetaStar\checkpoints\ppo_opening.pt"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fine-tune the IL checkpoint on a 180-second opening goal."
+        description="Fine-tune the IL checkpoint on a short opening goal."
     )
     parser.add_argument("--updates", type=int, default=10)
     parser.add_argument("--episodes-per-update", type=int, default=8)
-    parser.add_argument("--time-limit", type=int, default=180)
+    parser.add_argument("--time-limit", type=int, default=200)
     parser.add_argument(
         "--difficulty", choices=DIFFICULTIES, default="easy"
     )
     parser.add_argument("--seed", type=int, default=54)
     parser.add_argument("--temperature", type=float,
-                        default=INFERENCE_TEMPERATURE)
+                        default=DEFAULT_PPO_TEMPERATURE)
     parser.add_argument("--checkpoint", default=CHECKPOINT_PATH,
                         help="IL checkpoint used to initialize and anchor PPO.")
     parser.add_argument("--resume", default=None,
@@ -60,15 +65,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--success-bonus", type=float, default=2.0)
     parser.add_argument("--failure-penalty", type=float, default=-1.0)
     parser.add_argument("--execution-failure-penalty", type=float,
-                        default=-0.02)
+                        default=0.0)
     parser.add_argument("--pylon-start-reward", type=float, default=0.05)
     parser.add_argument("--pylon-complete-reward", type=float, default=0.15)
     parser.add_argument("--gateway-start-reward", type=float, default=0.10)
     parser.add_argument("--gateway-complete-reward", type=float, default=0.30)
+    parser.add_argument("--assimilator-start-reward", type=float, default=0.05)
+    parser.add_argument("--assimilator-complete-reward", type=float,
+                        default=0.15)
+    parser.add_argument("--nexus-start-reward", type=float, default=0.20)
     parser.add_argument("--cybercore-start-reward", type=float, default=0.20)
     parser.add_argument("--cybercore-complete-reward", type=float, default=0.60)
     parser.add_argument("--pylon-deadline", type=float, default=None)
     parser.add_argument("--gateway-deadline", type=float, default=None)
+    parser.add_argument("--assimilator-deadline", type=float, default=None)
+    parser.add_argument("--nexus-start-deadline", type=float, default=None)
     parser.add_argument("--cybercore-deadline", type=float, default=None)
     args = parser.parse_args()
 
@@ -88,7 +99,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--clip-ratio must be in [0, 1)")
     if not 0 <= args.gamma <= 1 or not 0 <= args.gae_lambda <= 1:
         parser.error("--gamma and --gae-lambda must be in [0, 1]")
-    for flag in ("pylon_deadline", "gateway_deadline", "cybercore_deadline"):
+    for flag in (
+        "pylon_deadline", "gateway_deadline", "assimilator_deadline",
+        "nexus_start_deadline", "cybercore_deadline",
+    ):
         value = getattr(args, flag)
         if value is not None and value <= 0:
             parser.error(f"--{flag.replace('_', '-')} must be positive")
@@ -102,10 +116,12 @@ def _device(name: str) -> str:
 
 
 def _reward_config(args: argparse.Namespace) -> OpeningRewardConfig:
-    base = default_opening_reward(float(args.time_limit))
+    base = default_opening_reward()
     deadlines = {
         "pylon": args.pylon_deadline,
         "gateway": args.gateway_deadline,
+        "assimilator": args.assimilator_deadline,
+        "nexus": args.nexus_start_deadline,
         "cybernetics_core": args.cybercore_deadline,
     }
     rewards = {
@@ -113,6 +129,10 @@ def _reward_config(args: argparse.Namespace) -> OpeningRewardConfig:
         "gateway": (
             args.gateway_start_reward, args.gateway_complete_reward
         ),
+        "assimilator": (
+            args.assimilator_start_reward, args.assimilator_complete_reward
+        ),
+        "nexus": (args.nexus_start_reward, 0.0),
         "cybernetics_core": (
             args.cybercore_start_reward, args.cybercore_complete_reward
         ),
@@ -246,6 +266,7 @@ def main() -> None:
                 "reward_config": reward_config.to_dict(),
                 "difficulty": args.difficulty,
                 "episodes_per_update": args.episodes_per_update,
+                "opening_structure_limits": OPENING_STRUCTURE_LIMITS,
                 "source_il_checkpoint": str(
                     Path(source_il_checkpoint).resolve()
                 ),

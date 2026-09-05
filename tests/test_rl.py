@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "source"
 sys.path.insert(0, str(SOURCE))
 
 from model import ProtossTransformerModel  # noqa: E402
-from obs_spec import OBS_SIZE  # noqa: E402
+from obs_spec import ACTION_ID, NUM_ACTIONS, OBS_SIZE  # noqa: E402
 from rl.ppo import (  # noqa: E402
     ActorCritic,
     PPOConfig,
@@ -30,28 +31,104 @@ from rl.reward import (  # noqa: E402
 
 class RewardTests(unittest.TestCase):
     def test_rewards_state_transitions_once_and_terminal_success(self):
-        tracker = OpeningRewardTracker(default_opening_reward(180.0))
+        tracker = OpeningRewardTracker(default_opening_reward())
         tracker.reset(OpeningSnapshot(0.0, frozenset(), frozenset()))
 
         self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
-            24.0, frozenset({"pylon"}), frozenset()
+            28.0, frozenset({"pylon"}), frozenset()
         )), 0.05)
         self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
-            48.0, frozenset({"pylon"}), frozenset({"pylon"})
+            50.0, frozenset({"pylon"}), frozenset({"pylon"})
         )), 0.15)
+        tracker.observe(OpeningSnapshot(
+            72.0,
+            frozenset({"pylon", "gateway", "assimilator"}),
+            frozenset({"pylon"}),
+        ))
+        tracker.observe(OpeningSnapshot(
+            97.0,
+            frozenset({"pylon", "gateway", "assimilator"}),
+            frozenset({"pylon", "assimilator"}),
+        ))
+        tracker.observe(OpeningSnapshot(
+            123.0,
+            frozenset({"pylon", "gateway", "assimilator"}),
+            frozenset({"pylon", "gateway", "assimilator"}),
+        ))
+        tracker.observe(OpeningSnapshot(
+            128.0,
+            frozenset({"pylon", "gateway", "assimilator", "nexus"}),
+            frozenset({"pylon", "gateway", "assimilator"}),
+        ))
+        tracker.observe(OpeningSnapshot(
+            144.0,
+            frozenset({
+                "pylon", "gateway", "assimilator", "nexus",
+                "cybernetics_core",
+            }),
+            frozenset({"pylon", "gateway", "assimilator"}),
+        ))
+        tracker.observe(OpeningSnapshot(
+            185.0,
+            frozenset({
+                "pylon", "gateway", "assimilator", "nexus",
+                "cybernetics_core",
+            }),
+            frozenset({
+                "pylon", "gateway", "assimilator", "cybernetics_core",
+            }),
+        ))
         self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
-            52.0, frozenset({"pylon"}), frozenset({"pylon"})
-        )), 0.0)
-        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
-            100.0,
-            frozenset({"pylon", "gateway", "cybernetics_core"}),
-            frozenset({"pylon", "gateway", "cybernetics_core"}),
-        ), terminal=True), 3.2)
+            200.0,
+            frozenset({
+                "pylon", "gateway", "assimilator", "nexus",
+                "cybernetics_core",
+            }),
+            frozenset({
+                "pylon", "gateway", "assimilator", "cybernetics_core",
+            }),
+        ), terminal=True), 2.0)
         self.assertTrue(tracker.goal_met)
-        self.assertAlmostEqual(tracker.total_reward, 3.4)
+        self.assertAlmostEqual(tracker.total_reward, 3.8)
+
+    def test_late_cybercore_misses_terminal_timing_goal(self):
+        tracker = OpeningRewardTracker(default_opening_reward())
+        tracker.reset(OpeningSnapshot(0.0, frozenset(), frozenset()))
+        all_started = frozenset({
+            "pylon", "gateway", "assimilator", "nexus",
+            "cybernetics_core",
+        })
+        ready_without_nexus = frozenset({
+            "pylon", "gateway", "assimilator", "cybernetics_core",
+        })
+        tracker.observe(OpeningSnapshot(
+            136.0,
+            all_started,
+            frozenset({"pylon", "gateway", "assimilator"}),
+            completion_times={
+                "pylon": 50.0,
+                "gateway": 122.0,
+                "assimilator": 96.0,
+            },
+        ))
+        tracker.observe(OpeningSnapshot(
+            204.0,
+            all_started,
+            ready_without_nexus,
+            completion_times={
+                "pylon": 50.0,
+                "gateway": 122.0,
+                "assimilator": 96.0,
+                "cybernetics_core": 201.0,
+            },
+        ), terminal=True)
+        self.assertFalse(tracker.goal_met)
 
     def test_failed_execution_and_terminal_failure_are_penalized(self):
-        tracker = OpeningRewardTracker(default_opening_reward(180.0))
+        config = replace(
+            default_opening_reward(), execution_failure_penalty=-0.02
+        )
+        tracker = OpeningRewardTracker(config)
         tracker.reset(OpeningSnapshot(0.0, frozenset(), frozenset()))
         reward = tracker.observe(
             OpeningSnapshot(180.0, frozenset(), frozenset()),
@@ -93,6 +170,20 @@ class PPOTests(unittest.TestCase):
         self.assertAlmostEqual(float(advantages[0]), 0.99 * 0.95, places=5)
         np.testing.assert_allclose(advantages, returns)
 
+    def test_actor_critic_respects_and_records_opening_mask_probability(self):
+        actor_critic = ActorCritic(self._model()).eval()
+        observation = np.zeros(OBS_SIZE, dtype=np.float32)
+        legal_mask = np.ones(NUM_ACTIONS, dtype=np.bool_)
+        legal_mask[ACTION_ID["build_pylon"]] = False
+
+        action, log_prob, _, diagnostics = actor_critic.sample_action(
+            [observation], "cpu", temperature=1.0, legal_mask=legal_mask
+        )
+
+        self.assertNotEqual(action, ACTION_ID["build_pylon"])
+        self.assertTrue(np.isfinite(log_prob))
+        self.assertEqual(diagnostics["n_legal"], 2)
+
     def test_ppo_update_accepts_variable_length_histories(self):
         actor_critic = ActorCritic(self._model()).eval()
         reference = frozen_policy_copy(actor_critic)
@@ -126,4 +217,3 @@ class PPOTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

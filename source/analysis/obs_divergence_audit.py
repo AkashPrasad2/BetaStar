@@ -55,6 +55,7 @@ from replay_parser import (  # noqa: E402
     WindowedState, GRID_INTERVAL_SECONDS, STRUCTURES,
     STRUCTURE_NAME_MAP, UNIT_NAME_MAP,
     BUILD_COMMAND_TO_STRUCTURE, TRAIN_COMMAND_TO_UNIT,
+    is_command_event,
 )
 from obs_spec import TIME_NORM  # noqa: E402
 
@@ -67,10 +68,6 @@ CANCEL_ABILITIES = {
     "HaltBuilding", "CancelMorphArchon", "CancelGravitonBeam",
     "AdeptPhaseShiftCancel", "AdeptShadePhaseShiftCancel",
 }
-
-COMMAND_EVENTS = (BasicCommandEvent, TargetPointCommandEvent,
-                  TargetUnitCommandEvent)
-
 
 def section(title: str):
     print(f"\n{'=' * 72}")
@@ -240,7 +237,7 @@ def audit_replay(replay, pid: int) -> ReplayAudit:
                 if skey and truth_pending.get(skey, 0) > 0:
                     truth_pending[skey] -= 1
 
-        elif isinstance(event, COMMAND_EVENTS):
+        elif is_command_event(event):
             if event.player.pid == pid:
                 ability = event.ability_name
                 if ability in BUILD_COMMAND_TO_STRUCTURE:

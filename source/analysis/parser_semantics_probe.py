@@ -46,11 +46,10 @@ except ImportError:  # pragma: no cover
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from replay_parser import (  # noqa: E402
     WindowedState, STRUCTURE_NAME_MAP, UNIT_NAME_MAP, TRAIN_COMMAND_TO_UNIT,
+    is_command_event,
 )
 
 DEFAULT_REPLAY_DIR = r"C:\dev\BetaStar\replays\raw"
-COMMAND_EVENTS = (BasicCommandEvent, TargetPointCommandEvent,
-                  TargetUnitCommandEvent)
 
 
 def section(title: str):
@@ -189,7 +188,7 @@ def q3_label_undercount(replay, pid):
     born_times = defaultdict(list)
 
     for event in replay.events:
-        if isinstance(event, COMMAND_EVENTS) and event.player.pid == pid:
+        if is_command_event(event) and event.player.pid == pid:
             key = TRAIN_COMMAND_TO_UNIT.get(event.ability_name)
             if key:
                 cmds[key] += 1

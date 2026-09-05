@@ -212,6 +212,20 @@ UPGRADE_COMMAND_TO_LEVEL = {
 COMMAND_EVENTS = (BasicCommandEvent, TargetPointCommandEvent,
                   TargetUnitCommandEvent)
 
+
+def is_command_event(event) -> bool:
+    """Return True only for an actual player-issued replay command.
+
+    sc2reader's UpdateTarget*CommandEvent classes inherit from the corresponding
+    command classes, so isinstance() also accepts them. Those internal delta
+    updates have ability_id=0 but may retain the previous command's ability
+    name. After BuildAssimilator, ordinary target updates were therefore
+    mislabeled as dozens of extra assimilator builds and collision-queued across
+    future windows. Exact type matching excludes updates while retaining the
+    three real command event variants imported above.
+    """
+    return type(event) in COMMAND_EVENTS
+
 _EPS = 0.01
 
 # ---------------------------------------------------------------------------
@@ -442,7 +456,7 @@ class WindowedState:
                     (float(second), float(minerals), float(vespene),
                      float(supply_used), float(supply_cap)))
 
-            elif isinstance(event, COMMAND_EVENTS):
+            elif is_command_event(event):
                 if event.player.pid != self.pid:
                     continue
                 ability = event.ability_name
@@ -790,7 +804,7 @@ class ReplayParser:
         G = GRID_INTERVAL_SECONDS
 
         for event in replay.events:
-            if not isinstance(event, COMMAND_EVENTS):
+            if not is_command_event(event):
                 continue
             if event.player.pid != pid:
                 continue

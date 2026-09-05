@@ -10,9 +10,12 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from action_mask import apply_legal_mask, build_legal_mask
+from action_mask import build_legal_mask
 from model import ProtossTransformerModel, load_model
 from obs_spec import ACTION_NAMES
+
+
+DEFAULT_PPO_TEMPERATURE = 1.0
 
 
 @dataclass
@@ -25,6 +28,10 @@ class RolloutStep:
     old_value: float
     reward: float = 0.0
     done: bool = False
+    # The exact mask used when sampling.  Opening rollouts add live-game caps
+    # (including worker-en-route builds that are absent from the observation),
+    # so PPO must retain the mask to reproduce the old policy probability.
+    legal_mask: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -40,7 +47,7 @@ class PPOConfig:
     update_epochs: int = 4
     minibatch_size: int = 64
     target_kl: float = 0.03
-    temperature: float = 1.5
+    temperature: float = DEFAULT_PPO_TEMPERATURE
 
 
 class ActorCritic(nn.Module):
@@ -71,6 +78,7 @@ class ActorCritic(nn.Module):
         device: str,
         temperature: float,
         top_k: int = 5,
+        legal_mask: np.ndarray | None = None,
     ) -> tuple[int, float, float, dict]:
         """Sample exactly once and retain the probability PPO must compare."""
         observations = torch.as_tensor(
@@ -79,7 +87,17 @@ class ActorCritic(nn.Module):
         logits, values = self(observations)
         raw_logits = logits[:, -1, :]
         last_obs = observations[:, -1, :]
-        masked_logits = apply_legal_mask(raw_logits, last_obs)
+        legal = build_legal_mask(last_obs)
+        if legal_mask is not None:
+            rollout_mask = torch.as_tensor(
+                legal_mask, dtype=torch.bool, device=device
+            ).reshape(1, -1)
+            if rollout_mask.shape != legal.shape:
+                raise ValueError(
+                    "legal_mask must contain exactly one value per action"
+                )
+            legal &= rollout_mask
+        masked_logits = raw_logits.masked_fill(~legal, float("-inf"))
         distribution = Categorical(logits=masked_logits / temperature)
         action = distribution.sample()
         action_id = int(action.item())
@@ -184,18 +202,30 @@ class PPOTrainer:
         selected_logits = logits[rows, positions]
         values = all_values[rows, positions]
         last_observations = observations[rows, positions]
-        masked_logits = apply_legal_mask(selected_logits, last_observations)
+        legal = build_legal_mask(last_observations)
+        for row, sample in enumerate(samples):
+            if sample.legal_mask is not None:
+                rollout_mask = torch.as_tensor(
+                    sample.legal_mask, dtype=torch.bool, device=self.device
+                )
+                if rollout_mask.numel() != legal.shape[1]:
+                    raise ValueError(
+                        "stored legal_mask must contain one value per action"
+                    )
+                legal[row] &= rollout_mask.reshape(-1)
+        masked_logits = selected_logits.masked_fill(
+            ~legal, float("-inf")
+        )
         distribution = Categorical(
             logits=masked_logits / self.config.temperature
         )
 
         with torch.no_grad():
             reference_logits = self.reference_policy(observations)[rows, positions]
-            reference_masked = apply_legal_mask(
-                reference_logits, last_observations
+            reference_masked = reference_logits.masked_fill(
+                ~legal, float("-inf")
             ) / self.config.temperature
 
-        legal = build_legal_mask(last_observations)
         current_log_all = torch.log_softmax(
             masked_logits / self.config.temperature, dim=-1
         )
@@ -343,4 +373,3 @@ class PPOTrainer:
             "mean_return": float(np.concatenate(returns_parts).mean()),
         })
         return metrics
-

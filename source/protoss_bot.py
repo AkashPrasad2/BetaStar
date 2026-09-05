@@ -102,12 +102,16 @@ class ProtossBot(BotAI):
     def _update_milestones(self):
         """Record the first observed completion time for the opening goal."""
         milestones = {
-            "pylon": UnitTypeId.PYLON,
-            "gateway": UnitTypeId.GATEWAY,
-            "cybernetics_core": UnitTypeId.CYBERNETICSCORE,
+            "pylon": (UnitTypeId.PYLON, 1),
+            "gateway": (UnitTypeId.GATEWAY, 1),
+            "assimilator": (UnitTypeId.ASSIMILATOR, 1),
+            # Two ready Nexuses means the expansion, not the starting base.
+            "nexus": (UnitTypeId.NEXUS, 2),
+            "cybernetics_core": (UnitTypeId.CYBERNETICSCORE, 1),
         }
-        for name, unit_type in milestones.items():
-            if name not in self.milestone_times and self.structures(unit_type).ready:
+        for name, (unit_type, target_count) in milestones.items():
+            if (name not in self.milestone_times
+                    and self.structures(unit_type).ready.amount >= target_count):
                 self.milestone_times[name] = float(self.time)
 
     def episode_summary(self, game_result=None) -> dict:
