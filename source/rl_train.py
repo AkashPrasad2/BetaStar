@@ -40,9 +40,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float,
                         default=DEFAULT_PPO_TEMPERATURE)
     parser.add_argument("--checkpoint", default=CHECKPOINT_PATH,
-                        help="IL checkpoint used to initialize and anchor PPO.")
-    parser.add_argument("--resume", default=None,
-                        help="Resume an RL checkpoint created by this script.")
+                        help="IL checkpoint used for a fresh start and PPO anchor.")
+    start_group = parser.add_mutually_exclusive_group()
+    start_group.add_argument(
+        "--resume", default=None, metavar="PATH",
+        help=("Resume a specific PPO checkpoint. By default the script "
+              "automatically resumes --output when that file exists."),
+    )
+    start_group.add_argument(
+        "--fresh", action="store_true",
+        help="Ignore an existing PPO output and restart from the IL checkpoint.",
+    )
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument("--device", default="auto",
                         help="auto, cpu, cuda, or another torch device.")
@@ -193,6 +201,7 @@ def _save_checkpoint(
     ppo_config: PPOConfig,
     reward_config: OpeningRewardConfig,
     goal_rate: float,
+    best_goal_rate: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -202,14 +211,21 @@ def _save_checkpoint(
         # source/run.py and model.load_model for ordinary evaluation.
         "model_state": actor_critic.policy.state_dict(),
         "actor_critic_state": actor_critic.state_dict(),
+        "reference_policy_state": trainer.reference_policy.state_dict(),
         "optimizer_state": trainer.optimizer.state_dict(),
         "source_il_checkpoint": str(Path(source_il_checkpoint).resolve()),
         "ppo_config": asdict(ppo_config),
         "reward_config": reward_config.to_dict(),
         "batch_goal_rate": goal_rate,
+        "best_goal_rate": best_goal_rate,
         **model_metadata,
     }
-    torch.save(payload, path)
+    # A Ctrl+C during rollout collection leaves the previous update intact;
+    # this temporary-file swap also protects it from an interruption during
+    # the comparatively short torch.save itself.
+    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+    torch.save(payload, temporary_path)
+    temporary_path.replace(path)
 
 
 def main() -> None:
@@ -217,12 +233,26 @@ def main() -> None:
     device = _device(args.device)
     torch.manual_seed(args.seed)
 
+    output_path = Path(args.output)
+    resume_path = None
+    if args.resume is not None:
+        resume_path = Path(args.resume)
+    elif not args.fresh and output_path.exists():
+        resume_path = output_path
+
     source_il_checkpoint = args.checkpoint
     resume_data = None
-    if args.resume:
-        resume_data = torch.load(args.resume, map_location=device)
+    if resume_path is not None:
+        if not resume_path.is_file():
+            raise FileNotFoundError(
+                f"PPO resume checkpoint does not exist: {resume_path}"
+            )
+        resume_data = torch.load(resume_path, map_location=device)
         if resume_data.get("format") != "betastar_ppo_v1":
-            raise ValueError("--resume is not a BetaStar PPO checkpoint")
+            raise ValueError(
+                f"Resume file is not a BetaStar PPO checkpoint: {resume_path}. "
+                "Use --fresh to restart from IL."
+            )
         source_il_checkpoint = resume_data.get(
             "source_il_checkpoint", source_il_checkpoint
         )
@@ -231,6 +261,10 @@ def main() -> None:
         source_il_checkpoint, device=device
     )
     reference_policy = frozen_policy_copy(actor_critic)
+    if resume_data is not None and "reference_policy_state" in resume_data:
+        reference_policy.load_state_dict(
+            resume_data["reference_policy_state"]
+        )
     ppo_config = _ppo_config(args)
     reward_config = _reward_config(args)
     trainer = PPOTrainer(
@@ -242,7 +276,6 @@ def main() -> None:
         trainer.optimizer.load_state_dict(resume_data["optimizer_state"])
         first_update = int(resume_data["update"]) + 1
 
-    output_path = Path(args.output)
     best_path = output_path.with_name(
         f"{output_path.stem}_best{output_path.suffix}"
     )
@@ -252,9 +285,20 @@ def main() -> None:
     training_log_path = log_dir / f"rl_training_{stamp}.jsonl"
     metadata = _model_metadata(source_il_checkpoint)
     best_goal_rate = -1.0
+    if resume_data is not None:
+        best_goal_rate = float(resume_data.get(
+            "best_goal_rate", resume_data.get("batch_goal_rate", -1.0)
+        ))
 
     print(f"Device: {device}")
-    print(f"IL initialization: {source_il_checkpoint}")
+    if resume_path is None:
+        print(f"Initialization: fresh from IL ({source_il_checkpoint})")
+    else:
+        print(
+            f"Initialization: resumed PPO ({resume_path}, "
+            f"next update {first_update})"
+        )
+        print(f"IL reference anchor: {source_il_checkpoint}")
     print(f"Opening horizon: {args.time_limit}s")
     print(f"PPO checkpoint: {output_path}")
     print(f"Training log: {training_log_path}")
@@ -335,17 +379,20 @@ def main() -> None:
             training_log.write(json.dumps(record) + "\n")
             training_log.flush()
 
+            new_best = goal_rate > best_goal_rate
+            if new_best:
+                best_goal_rate = goal_rate
+
             _save_checkpoint(
                 output_path, actor_critic, trainer, update,
                 source_il_checkpoint, metadata, ppo_config, reward_config,
-                goal_rate,
+                goal_rate, best_goal_rate,
             )
-            if goal_rate > best_goal_rate:
-                best_goal_rate = goal_rate
+            if new_best:
                 _save_checkpoint(
                     best_path, actor_critic, trainer, update,
                     source_il_checkpoint, metadata, ppo_config,
-                    reward_config, goal_rate,
+                    reward_config, goal_rate, best_goal_rate,
                 )
 
             print(
