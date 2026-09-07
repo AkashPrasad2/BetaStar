@@ -26,6 +26,7 @@ from rl.reward import (  # noqa: E402
     OpeningRewardTracker,
     OpeningSnapshot,
     default_opening_reward,
+    timing_multiplier,
 )
 from rl_eval import summarize_episodes  # noqa: E402
 
@@ -39,38 +40,48 @@ class RewardTests(unittest.TestCase):
             28.0, frozenset({"pylon"}), frozenset()
         )), 0.05)
         self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
-            50.0, frozenset({"pylon"}), frozenset({"pylon"})
+            44.0, frozenset({"pylon"}), frozenset({"pylon"})
         )), 0.15)
-        tracker.observe(OpeningSnapshot(
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
+            64.0,
+            frozenset({"pylon", "gateway"}),
+            frozenset({"pylon"}),
+        )), 0.10)
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
             72.0,
             frozenset({"pylon", "gateway", "assimilator"}),
             frozenset({"pylon"}),
-        ))
-        tracker.observe(OpeningSnapshot(
-            97.0,
+        )), 0.10)
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
+            96.0,
             frozenset({"pylon", "gateway", "assimilator"}),
             frozenset({"pylon", "assimilator"}),
-        ))
-        tracker.observe(OpeningSnapshot(
-            123.0,
+            completion_times={"pylon": 44.0, "assimilator": 96.0},
+        )), 0.30)
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
+            110.0,
             frozenset({"pylon", "gateway", "assimilator"}),
             frozenset({"pylon", "gateway", "assimilator"}),
-        ))
-        tracker.observe(OpeningSnapshot(
+            completion_times={
+                "pylon": 44.0, "gateway": 110.0,
+                "assimilator": 96.0,
+            },
+        )), 0.30)
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
             128.0,
             frozenset({"pylon", "gateway", "assimilator", "nexus"}),
             frozenset({"pylon", "gateway", "assimilator"}),
-        ))
-        tracker.observe(OpeningSnapshot(
+        )), 0.40)
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
             144.0,
             frozenset({
                 "pylon", "gateway", "assimilator", "nexus",
                 "cybernetics_core",
             }),
             frozenset({"pylon", "gateway", "assimilator"}),
-        ))
-        tracker.observe(OpeningSnapshot(
-            185.0,
+        )), 0.20)
+        self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
+            180.0,
             frozenset({
                 "pylon", "gateway", "assimilator", "nexus",
                 "cybernetics_core",
@@ -78,7 +89,11 @@ class RewardTests(unittest.TestCase):
             frozenset({
                 "pylon", "gateway", "assimilator", "cybernetics_core",
             }),
-        ))
+            completion_times={
+                "pylon": 44.0, "gateway": 110.0,
+                "assimilator": 96.0, "cybernetics_core": 180.0,
+            },
+        )), 0.60)
         self.assertAlmostEqual(tracker.observe(OpeningSnapshot(
             200.0,
             frozenset({
@@ -88,9 +103,9 @@ class RewardTests(unittest.TestCase):
             frozenset({
                 "pylon", "gateway", "assimilator", "cybernetics_core",
             }),
-        ), terminal=True), 2.0)
+        ), terminal=True), 3.0)
         self.assertTrue(tracker.goal_met)
-        self.assertAlmostEqual(tracker.total_reward, 3.8)
+        self.assertAlmostEqual(tracker.total_reward, 5.2)
 
     def test_late_cybercore_misses_terminal_timing_goal(self):
         tracker = OpeningRewardTracker(default_opening_reward())
@@ -124,6 +139,9 @@ class RewardTests(unittest.TestCase):
             },
         ), terminal=True)
         self.assertFalse(tracker.goal_met)
+        self.assertAlmostEqual(
+            tracker.breakdown["terminal:missed:cybernetics_core"], -0.4
+        )
 
     def test_failed_execution_and_terminal_failure_are_penalized(self):
         config = replace(
@@ -136,8 +154,31 @@ class RewardTests(unittest.TestCase):
             "unaffordable",
             terminal=True,
         )
-        self.assertAlmostEqual(reward, -1.02)
+        self.assertAlmostEqual(reward, -2.02)
         self.assertFalse(tracker.goal_met)
+
+    def test_timing_reward_decays_linearly_after_target(self):
+        self.assertEqual(timing_multiplier(100.0, 110.0, 132.0), 1.0)
+        self.assertAlmostEqual(
+            timing_multiplier(121.0, 110.0, 132.0), 0.5
+        )
+        self.assertEqual(timing_multiplier(132.0, 110.0, 132.0), 0.0)
+        self.assertEqual(timing_multiplier(150.0, 110.0, 132.0), 0.0)
+
+    def test_idle_penalties_repeat_while_the_opportunity_remains(self):
+        tracker = OpeningRewardTracker(default_opening_reward())
+        tracker.reset(OpeningSnapshot(0.0, frozenset(), frozenset()))
+        snapshot = OpeningSnapshot(
+            4.0,
+            frozenset(),
+            frozenset(),
+            idle_unsaturated_nexuses=1,
+            affordable_idle_production=2,
+        )
+
+        self.assertAlmostEqual(tracker.observe(snapshot), -0.05)
+        self.assertAlmostEqual(tracker.observe(snapshot), -0.05)
+        self.assertAlmostEqual(tracker.total_reward, -0.10)
 
 
 class PPOTests(unittest.TestCase):
@@ -159,6 +200,33 @@ class PPOTests(unittest.TestCase):
         actual, values = actor_critic(observations)
         torch.testing.assert_close(actual, expected)
         torch.testing.assert_close(values, torch.zeros_like(values))
+
+    def test_reset_value_head_for_new_reward_scale(self):
+        actor_critic = ActorCritic(self._model()).eval()
+        with torch.no_grad():
+            actor_critic.value_head[0].weight.fill_(2.0)
+            actor_critic.value_head[0].bias.fill_(3.0)
+            actor_critic.value_head[-1].weight.fill_(4.0)
+            actor_critic.value_head[-1].bias.fill_(5.0)
+
+        actor_critic.reset_value_head()
+
+        torch.testing.assert_close(
+            actor_critic.value_head[0].weight,
+            torch.ones_like(actor_critic.value_head[0].weight),
+        )
+        torch.testing.assert_close(
+            actor_critic.value_head[0].bias,
+            torch.zeros_like(actor_critic.value_head[0].bias),
+        )
+        torch.testing.assert_close(
+            actor_critic.value_head[-1].weight,
+            torch.zeros_like(actor_critic.value_head[-1].weight),
+        )
+        torch.testing.assert_close(
+            actor_critic.value_head[-1].bias,
+            torch.zeros_like(actor_critic.value_head[-1].bias),
+        )
 
     def test_gae_propagates_terminal_reward_backwards(self):
         observations = np.zeros((1, OBS_SIZE), dtype=np.float32)

@@ -71,6 +71,12 @@ class ActorCritic(nn.Module):
         hidden = self.policy.encode(observations)
         return self.policy.output_head(hidden), self.value_head(hidden).squeeze(-1)
 
+    def reset_value_head(self) -> None:
+        """Forget value estimates when the definition of reward changes."""
+        self.value_head[0].reset_parameters()
+        nn.init.zeros_(self.value_head[-1].weight)
+        nn.init.zeros_(self.value_head[-1].bias)
+
     @torch.no_grad()
     def sample_action(
         self,

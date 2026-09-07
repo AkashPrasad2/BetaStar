@@ -70,18 +70,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-kl", type=float, default=0.03)
     parser.add_argument("--max-grad-norm", type=float, default=0.50)
 
-    parser.add_argument("--success-bonus", type=float, default=2.0)
-    parser.add_argument("--failure-penalty", type=float, default=-1.0)
+    parser.add_argument("--success-bonus", type=float, default=3.0)
+    parser.add_argument("--failure-penalty", type=float, default=0.0)
+    parser.add_argument("--missed-milestone-penalty", type=float,
+                        default=-0.40)
     parser.add_argument("--execution-failure-penalty", type=float,
                         default=0.0)
+    parser.add_argument("--idle-nexus-penalty", type=float, default=-0.02)
+    parser.add_argument("--idle-production-penalty", type=float,
+                        default=-0.015)
+    parser.add_argument("--idle-production-penalty-cap", type=float,
+                        default=0.06)
     parser.add_argument("--pylon-start-reward", type=float, default=0.05)
     parser.add_argument("--pylon-complete-reward", type=float, default=0.15)
     parser.add_argument("--gateway-start-reward", type=float, default=0.10)
     parser.add_argument("--gateway-complete-reward", type=float, default=0.30)
-    parser.add_argument("--assimilator-start-reward", type=float, default=0.05)
+    parser.add_argument("--assimilator-start-reward", type=float, default=0.10)
     parser.add_argument("--assimilator-complete-reward", type=float,
-                        default=0.15)
-    parser.add_argument("--nexus-start-reward", type=float, default=0.20)
+                        default=0.30)
+    parser.add_argument("--nexus-start-reward", type=float, default=0.40)
     parser.add_argument("--cybercore-start-reward", type=float, default=0.20)
     parser.add_argument("--cybercore-complete-reward", type=float, default=0.60)
     parser.add_argument("--pylon-deadline", type=float, default=None)
@@ -107,6 +114,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("--clip-ratio must be in [0, 1)")
     if not 0 <= args.gamma <= 1 or not 0 <= args.gae_lambda <= 1:
         parser.error("--gamma and --gae-lambda must be in [0, 1]")
+    for flag in (
+        "missed_milestone_penalty", "idle_nexus_penalty",
+        "idle_production_penalty",
+    ):
+        if getattr(args, flag) > 0:
+            parser.error(f"--{flag.replace('_', '-')} must be non-positive")
+    if args.idle_production_penalty_cap < 0:
+        parser.error("--idle-production-penalty-cap must be non-negative")
     for flag in (
         "pylon_deadline", "gateway_deadline", "assimilator_deadline",
         "nexus_start_deadline", "cybercore_deadline",
@@ -161,7 +176,11 @@ def _reward_config(args: argparse.Namespace) -> OpeningRewardConfig:
         milestones=milestones,
         success_bonus=args.success_bonus,
         failure_penalty=args.failure_penalty,
+        missed_milestone_penalty=args.missed_milestone_penalty,
         execution_failure_penalty=args.execution_failure_penalty,
+        idle_nexus_penalty=args.idle_nexus_penalty,
+        idle_production_penalty=args.idle_production_penalty,
+        idle_production_penalty_cap=args.idle_production_penalty_cap,
     )
 
 
@@ -267,13 +286,22 @@ def main() -> None:
         )
     ppo_config = _ppo_config(args)
     reward_config = _reward_config(args)
+    reward_changed = (
+        resume_data is not None
+        and resume_data.get("reward_config") != reward_config.to_dict()
+    )
     trainer = PPOTrainer(
         actor_critic, reference_policy, ppo_config, device=device
     )
     first_update = 1
     if resume_data is not None:
         actor_critic.load_state_dict(resume_data["actor_critic_state"])
-        trainer.optimizer.load_state_dict(resume_data["optimizer_state"])
+        if reward_changed:
+            # Preserve the PPO actor but discard value estimates and optimizer
+            # momentum calibrated to the previous reward scale.
+            actor_critic.reset_value_head()
+        else:
+            trainer.optimizer.load_state_dict(resume_data["optimizer_state"])
         first_update = int(resume_data["update"]) + 1
 
     best_path = output_path.with_name(
@@ -285,7 +313,7 @@ def main() -> None:
     training_log_path = log_dir / f"rl_training_{stamp}.jsonl"
     metadata = _model_metadata(source_il_checkpoint)
     best_goal_rate = -1.0
-    if resume_data is not None:
+    if resume_data is not None and not reward_changed:
         best_goal_rate = float(resume_data.get(
             "best_goal_rate", resume_data.get("batch_goal_rate", -1.0)
         ))
@@ -299,6 +327,11 @@ def main() -> None:
             f"next update {first_update})"
         )
         print(f"IL reference anchor: {source_il_checkpoint}")
+        if reward_changed:
+            print(
+                "Reward configuration changed: kept actor weights, reset "
+                "critic and optimizer, and restarted best-score tracking."
+            )
     print(f"Opening horizon: {args.time_limit}s")
     print(f"PPO checkpoint: {output_path}")
     print(f"Training log: {training_log_path}")
@@ -311,6 +344,7 @@ def main() -> None:
                 "difficulty": args.difficulty,
                 "episodes_per_update": args.episodes_per_update,
                 "opening_structure_limits": OPENING_STRUCTURE_LIMITS,
+                "reward_reset_on_resume": reward_changed,
                 "source_il_checkpoint": str(
                     Path(source_il_checkpoint).resolve()
                 ),
