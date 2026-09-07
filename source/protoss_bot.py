@@ -2,9 +2,10 @@ from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 
 import math
+import numpy as np
 
 from observation_wrapper import ObservationWrapper
-from obs_spec import DECISION_INTERVAL_SECONDS
+from obs_spec import ACTION_ID, DECISION_INTERVAL_SECONDS, NUM_ACTIONS
 from model import load_model, predict_action, MAX_CONTEXT
 from decision_log import DecisionLogger
 from helpers import (
@@ -24,6 +25,25 @@ DEVICE = "cpu"
 ENABLE_DECISION_LOG = True
 LOG_DIR = r"C:\dev\BetaStar\logs"
 
+# Exact build-count targets for the short PPO opening curriculum. Evaluation
+# may enforce them only during the opening and then release them for full-game
+# production.
+OPENING_STRUCTURE_LIMITS = {
+    "PYLON": 1,
+    "GATEWAY": 1,
+    "ASSIMILATOR": 1,
+    "NEXUS": 2,  # starting Nexus plus the requested expansion
+    "CYBERNETICSCORE": 1,
+}
+
+_OPENING_BUILD_ACTIONS = {
+    "PYLON": "build_pylon",
+    "GATEWAY": "build_gateway",
+    "ASSIMILATOR": "build_assimilator",
+    "NEXUS": "build_nexus",
+    "CYBERNETICSCORE": "build_cyberneticscore",
+}
+
 
 class ProtossBot(BotAI):
 
@@ -36,11 +56,13 @@ class ProtossBot(BotAI):
         log_dir: str = LOG_DIR,
         goal_deadline: float | None = None,
         policy_model=None,
+        opening_limits_until: float | None = None,
     ):
         super().__init__()
         self.device = device
         self.temperature = temperature
         self.goal_deadline = goal_deadline
+        self.opening_limits_until = opening_limits_until
         self.obs_wrapper = ObservationWrapper()
         # Evaluation loads from disk. RL supplies the optimizer-owned policy
         # directly so every episode uses the same in-memory parameters.
@@ -147,10 +169,29 @@ class ProtossBot(BotAI):
         }
         if self.temperature is not None:
             predict_kwargs["temperature"] = self.temperature
+        opening_mask = self._opening_action_mask()
+        if opening_mask is not None:
+            predict_kwargs["legal_mask"] = opening_mask
         selected = predict_action(self.model, self.obs_history, **predict_kwargs)
         if self.decision_log is not None:
             return selected
         return selected, {}
+
+    def _opening_action_mask(self) -> np.ndarray | None:
+        """Block duplicate target structures during the PPO opening only."""
+        if (self.opening_limits_until is None
+                or self.time >= self.opening_limits_until):
+            return None
+
+        legal = np.ones(NUM_ACTIONS, dtype=np.bool_)
+        for structure_name, target_count in OPENING_STRUCTURE_LIMITS.items():
+            structure = getattr(UnitTypeId, structure_name)
+            completed = self.structures(structure).ready.amount
+            pending = self.already_pending(structure)
+            if completed + pending >= target_count:
+                action_name = _OPENING_BUILD_ACTIONS[structure_name]
+                legal[ACTION_ID[action_name]] = False
+        return legal
 
     def _after_action_execution(self, action_id: int, result) -> None:
         """Extension hook used by rollout collectors after execution."""

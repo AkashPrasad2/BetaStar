@@ -53,6 +53,7 @@ class EpisodeConfig:
     temperature: float | None = None
     enable_decision_log: bool = True
     log_dir: str = LOG_DIR
+    opening_limits_until: float | None = None
 
 
 @dataclass
@@ -81,6 +82,7 @@ def _default_bot(config: EpisodeConfig) -> ProtossBot:
         enable_decision_log=config.enable_decision_log,
         log_dir=config.log_dir,
         goal_deadline=config.goal_deadline,
+        opening_limits_until=config.opening_limits_until,
     )
 
 

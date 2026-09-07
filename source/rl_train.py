@@ -11,8 +11,8 @@ from pathlib import Path
 import torch
 
 from episode import DIFFICULTIES, EpisodeConfig, run_episode
-from protoss_bot import CHECKPOINT_PATH, LOG_DIR
-from rl.bot import OPENING_STRUCTURE_LIMITS, PPOBot
+from protoss_bot import CHECKPOINT_PATH, LOG_DIR, OPENING_STRUCTURE_LIMITS
+from rl.bot import PPOBot
 from rl.ppo import (
     DEFAULT_PPO_TEMPERATURE,
     ActorCritic,

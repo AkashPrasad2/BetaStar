@@ -527,6 +527,7 @@ def predict_action(
     temperature: float = INFERENCE_TEMPERATURE,
     return_diagnostics: bool = False,
     top_k:       int = 5,
+    legal_mask=None,
 ):
     """
     Sequence inference with legal masking + temperature sampling.
@@ -553,6 +554,17 @@ def predict_action(
     last_obs = x[:, -1, :]           # (1, obs_size)
 
     masked_logits = apply_legal_mask(last_logits, last_obs)
+    if legal_mask is not None:
+        external_mask = torch.as_tensor(
+            legal_mask, dtype=torch.bool, device=device
+        ).reshape(1, -1)
+        if external_mask.shape != masked_logits.shape:
+            raise ValueError(
+                "legal_mask must contain exactly one value per action"
+            )
+        masked_logits = masked_logits.masked_fill(
+            ~external_mask, float("-inf")
+        )
     probs = torch.softmax(masked_logits[0] / temperature, dim=-1)
     action_id = int(torch.multinomial(probs, 1).item())
 

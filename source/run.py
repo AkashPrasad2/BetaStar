@@ -11,8 +11,12 @@ from pathlib import Path
 from sc2.data import Race, Result
 
 from episode import DIFFICULTIES, MAP_NAME, EpisodeConfig, run_episode
-from model import INFERENCE_TEMPERATURE
-from protoss_bot import CHECKPOINT_PATH, DEVICE, LOG_DIR
+from protoss_bot import DEVICE, LOG_DIR
+
+
+DEFAULT_PPO_CHECKPOINT = r"C:\dev\BetaStar\checkpoints\ppo_opening.pt"
+DEFAULT_PPO_TEMPERATURE = 1.0
+DEFAULT_OPENING_LIMIT_SECONDS = 200.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,8 +30,18 @@ def parse_args() -> argparse.Namespace:
         help="Stop after this many in-game seconds (for example, 180).")
     parser.add_argument("--seed", type=int, default=54)
     parser.add_argument("--temperature", type=float,
-                        default=INFERENCE_TEMPERATURE)
-    parser.add_argument("--checkpoint", default=CHECKPOINT_PATH)
+                        default=DEFAULT_PPO_TEMPERATURE)
+    parser.add_argument(
+        "--checkpoint", default=DEFAULT_PPO_CHECKPOINT,
+        help=("Policy checkpoint to evaluate (default: latest PPO opening "
+              "checkpoint)."),
+    )
+    parser.add_argument(
+        "--opening-limits-until", type=float,
+        default=DEFAULT_OPENING_LIMIT_SECONDS,
+        help=("Enforce PPO opening build limits through this game time; "
+              "use 0 to disable them (default: 200)."),
+    )
     parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--log-dir", default=LOG_DIR)
     parser.add_argument("--no-decision-log", action="store_true")
@@ -38,6 +52,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--time-limit must be at least 1 second")
     if args.temperature <= 0:
         parser.error("--temperature must be greater than 0")
+    if args.opening_limits_until < 0:
+        parser.error("--opening-limits-until cannot be negative")
+    if not Path(args.checkpoint).is_file():
+        parser.error(f"checkpoint does not exist: {args.checkpoint}")
     return args
 
 
@@ -69,6 +87,7 @@ def _write_report(args: argparse.Namespace, episodes: list[dict]) -> Path:
             "seed": args.seed,
             "temperature": args.temperature,
             "checkpoint": str(Path(args.checkpoint).resolve()),
+            "opening_limits_until": args.opening_limits_until or None,
         },
         "aggregate": {
             "wins": wins,
@@ -103,6 +122,7 @@ def main() -> None:
             temperature=args.temperature,
             enable_decision_log=not args.no_decision_log,
             log_dir=args.log_dir,
+            opening_limits_until=args.opening_limits_until or None,
         )
         print(
             f"\nEVALUATION GAME {game_index + 1}/{args.games} | "

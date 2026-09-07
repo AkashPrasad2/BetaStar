@@ -221,7 +221,8 @@ class PPOTrainer:
         )
 
         with torch.no_grad():
-            reference_logits = self.reference_policy(observations)[rows, positions]
+            reference_logits = self.reference_policy(observations)[
+                rows, positions]
             reference_masked = reference_logits.masked_fill(
                 ~legal, float("-inf")
             ) / self.config.temperature
@@ -256,7 +257,8 @@ class PPOTrainer:
         advantages = torch.as_tensor(
             np.concatenate(advantages_parts), device=self.device
         )
-        returns = torch.as_tensor(np.concatenate(returns_parts), device=self.device)
+        returns = torch.as_tensor(np.concatenate(
+            returns_parts), device=self.device)
         old_log_probs = torch.tensor(
             [step.old_log_prob for step in samples], device=self.device
         )
