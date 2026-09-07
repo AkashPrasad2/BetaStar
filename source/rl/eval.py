@@ -1,24 +1,34 @@
-"""Fixed-seed, read-only evaluation for IL and PPO opening policies."""
+"""Fixed-seed, read-only evaluation for IL and PPO opening policies.
+
+Run from the repository root with ``python source/rl/eval.py``.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import statistics
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 
+# Support running this file directly while keeping the implementation inside
+# the rl package. The rest of the project treats ``source`` as its import root.
+SOURCE_DIR = Path(__file__).resolve().parents[1]
+if str(SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIR))
+
 import torch
 
 from episode import DIFFICULTIES, EpisodeConfig, run_episode
-from protoss_bot import LOG_DIR
 from rl.bot import PPOBot
 from rl.ppo import ActorCritic
 from rl.reward import OpeningRewardConfig, default_opening_reward
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_CHECKPOINTS = (
     PROJECT_ROOT / "checkpoints" / "best_model.pt",
     PROJECT_ROOT / "checkpoints" / "ppo_opening.pt",
@@ -54,7 +64,7 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_CHECKPOINTS),
     )
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--log-dir", default=LOG_DIR)
+    parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--decision-log", action="store_true")
     parser.add_argument(

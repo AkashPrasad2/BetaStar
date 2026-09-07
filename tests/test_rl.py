@@ -28,7 +28,7 @@ from rl.reward import (  # noqa: E402
     default_opening_reward,
     timing_multiplier,
 )
-from rl_eval import summarize_episodes  # noqa: E402
+from rl.eval import summarize_episodes  # noqa: E402
 
 
 class RewardTests(unittest.TestCase):

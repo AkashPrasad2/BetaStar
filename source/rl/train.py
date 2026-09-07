@@ -1,17 +1,27 @@
-"""Train BetaStar's IL policy with finite-horizon PPO rollouts."""
+"""Train BetaStar's IL policy with finite-horizon PPO rollouts.
+
+Run from the repository root with ``python source/rl/train.py``.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
+# Support running this file directly while keeping the implementation inside
+# the rl package. The rest of the project treats ``source`` as its import root.
+SOURCE_DIR = Path(__file__).resolve().parents[1]
+if str(SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIR))
+
 import torch
 
 from episode import DIFFICULTIES, EpisodeConfig, run_episode
-from protoss_bot import CHECKPOINT_PATH, LOG_DIR, OPENING_STRUCTURE_LIMITS
+from protoss_bot import OPENING_STRUCTURE_LIMITS
 from rl.bot import PPOBot
 from rl.ppo import (
     DEFAULT_PPO_TEMPERATURE,
@@ -23,7 +33,10 @@ from rl.ppo import (
 from rl.reward import OpeningRewardConfig, default_opening_reward
 
 
-DEFAULT_OUTPUT = r"C:\dev\BetaStar\checkpoints\ppo_opening.pt"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_IL_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "best_model.pt"
+DEFAULT_OUTPUT = PROJECT_ROOT / "checkpoints" / "ppo_opening.pt"
+DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=54)
     parser.add_argument("--temperature", type=float,
                         default=DEFAULT_PPO_TEMPERATURE)
-    parser.add_argument("--checkpoint", default=CHECKPOINT_PATH,
+    parser.add_argument("--checkpoint", default=str(DEFAULT_IL_CHECKPOINT),
                         help="IL checkpoint used for a fresh start and PPO anchor.")
     start_group = parser.add_mutually_exclusive_group()
     start_group.add_argument(
@@ -51,10 +64,10 @@ def parse_args() -> argparse.Namespace:
         "--fresh", action="store_true",
         help="Ignore an existing PPO output and restart from the IL checkpoint.",
     )
-    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--device", default="auto",
                         help="auto, cpu, cuda, or another torch device.")
-    parser.add_argument("--log-dir", default=LOG_DIR)
+    parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--decision-log", action="store_true",
                         help="Write the verbose per-decision diagnostic log.")
 
