@@ -1,6 +1,6 @@
-"""Shared lifecycle for running one BetaStar StarCraft II episode.
+"""Shared lifecycle for running one BetaStar StarCraft II episode (game).
 
-Evaluation and reinforcement-learning collectors both need the same mechanics:
+Evaluation and rl collectors both need the same mechanics:
 seed all randomness, construct the bot and opponent, launch SC2, enforce an
 optional time limit, and return the resulting bot state and summary. Keeping
 that lifecycle here prevents the future RL trainer from duplicating it.

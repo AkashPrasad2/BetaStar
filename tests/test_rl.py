@@ -27,6 +27,7 @@ from rl.reward import (  # noqa: E402
     OpeningSnapshot,
     default_opening_reward,
 )
+from rl_eval import summarize_episodes  # noqa: E402
 
 
 class RewardTests(unittest.TestCase):
@@ -184,6 +185,16 @@ class PPOTests(unittest.TestCase):
         self.assertTrue(np.isfinite(log_prob))
         self.assertEqual(diagnostics["n_legal"], 2)
 
+    def test_deterministic_sampling_selects_masked_top_action(self):
+        actor_critic = ActorCritic(self._model()).eval()
+        observation = np.zeros(OBS_SIZE, dtype=np.float32)
+
+        action, _, _, diagnostics = actor_critic.sample_action(
+            [observation], "cpu", temperature=1.0, deterministic=True
+        )
+
+        self.assertEqual(action, diagnostics["masked_top1"])
+
     def test_ppo_update_accepts_variable_length_histories(self):
         actor_critic = ActorCritic(self._model()).eval()
         reference = frozen_policy_copy(actor_critic)
@@ -213,6 +224,36 @@ class PPOTests(unittest.TestCase):
         self.assertEqual(metrics["decisions"], 3.0)
         for value in metrics.values():
             self.assertTrue(np.isfinite(value))
+
+
+class EvaluatorTests(unittest.TestCase):
+    def test_summary_uses_required_phase_and_individual_deadlines(self):
+        episode = {
+            "episode_reward": 0.6,
+            "reward_goal_met": False,
+            "opening_started_times": {
+                "pylon": 24.0,
+                "gateway": 64.0,
+                "assimilator": 120.0,
+                "nexus": 124.0,
+                "cybernetics_core": 140.0,
+            },
+            "opening_completion_times": {
+                "pylon": 41.0,
+                "gateway": 109.0,
+                "assimilator": 139.0,
+                "cybernetics_core": 175.0,
+            },
+        }
+
+        summary = summarize_episodes(
+            [episode], default_opening_reward()
+        )
+
+        self.assertEqual(summary["targets"]["nexus"]["on_time"], 1)
+        self.assertEqual(summary["targets"]["gateway"]["on_time"], 1)
+        self.assertEqual(summary["targets"]["assimilator"]["on_time"], 0)
+        self.assertEqual(summary["goal_rate"], 0.0)
 
 
 if __name__ == "__main__":

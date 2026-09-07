@@ -79,6 +79,7 @@ class ActorCritic(nn.Module):
         temperature: float,
         top_k: int = 5,
         legal_mask: np.ndarray | None = None,
+        deterministic: bool = False,
     ) -> tuple[int, float, float, dict]:
         """Sample exactly once and retain the probability PPO must compare."""
         observations = torch.as_tensor(
@@ -99,7 +100,10 @@ class ActorCritic(nn.Module):
             legal &= rollout_mask
         masked_logits = raw_logits.masked_fill(~legal, float("-inf"))
         distribution = Categorical(logits=masked_logits / temperature)
-        action = distribution.sample()
+        action = (
+            distribution.probs.argmax(dim=-1)
+            if deterministic else distribution.sample()
+        )
         action_id = int(action.item())
         probabilities = distribution.probs[0]
 

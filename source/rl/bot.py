@@ -26,6 +26,8 @@ class PPOBot(ProtossBot):
         enable_decision_log: bool = False,
         log_dir: str,
         goal_deadline: float,
+        deterministic: bool = False,
+        enforce_opening_limits: bool = True,
     ):
         super().__init__(
             device=device,
@@ -34,11 +36,14 @@ class PPOBot(ProtossBot):
             log_dir=log_dir,
             goal_deadline=goal_deadline,
             policy_model=actor_critic.policy,
-            opening_limits_until=goal_deadline,
+            opening_limits_until=(
+                goal_deadline if enforce_opening_limits else None
+            ),
         )
         self.actor_critic = actor_critic
         self.actor_critic.eval()
         self.reward_tracker = OpeningRewardTracker(reward_config)
+        self.deterministic = deterministic
         self.rollout: list[RolloutStep] = []
         self._last_execution_result = None
 
@@ -60,13 +65,14 @@ class PPOBot(ProtossBot):
             device=self.device,
             temperature=self.temperature,
             legal_mask=legal_mask,
+            deterministic=self.deterministic,
         )
         self.rollout.append(RolloutStep(
             obs_history=np.asarray(self.obs_history, dtype=np.float32).copy(),
             action=action,
             old_log_prob=log_prob,
             old_value=value,
-            legal_mask=legal_mask.copy(),
+            legal_mask=(legal_mask.copy() if legal_mask is not None else None),
         ))
         return action, diagnostics
 
