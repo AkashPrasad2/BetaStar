@@ -1,10 +1,10 @@
-# ProtossBot specialization that collects on-policy PPO rollouts.
+"""Live-agent specialization that collects on-policy PPO rollouts."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from protoss_bot import ProtossBot
+from gameplay.agent import ProtossBot
 from rl.ppo import ActorCritic, RolloutStep
 from rl.reward import (
     OpeningRewardConfig,

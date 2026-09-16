@@ -18,7 +18,7 @@ being systematically demoted.
 
 Usage:
     python conflict_diagnostic.py
-    python conflict_diagnostic.py --path C:/dev/BetaStar/replays/parsed/dataset.npz
+    python source/analysis/conflict_diagnostic.py --path replays/parsed/dataset.npz
 """
 
 import argparse
@@ -26,13 +26,13 @@ import sys
 import numpy as np
 from pathlib import Path
 
-# ---- add project root to path so we can import action_mask ----
-# Adjust this if your project is elsewhere
-PROJECT_ROOT = r"C:\dev\BetaStar\source"
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+SOURCE_DIR = Path(__file__).resolve().parent.parent
+if str(SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIR))
 
-DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
+from paths import DEFAULT_DATASET
+
+DATASET_PATH = str(DEFAULT_DATASET)
 # Never hardcode these -- the obs layout changes (it went 70 -> 74 when the
 # resource encoding gained magnitude channels) and a stale literal here would
 # slice the action out of the wrong dataset column entirely.

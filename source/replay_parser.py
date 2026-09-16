@@ -62,7 +62,8 @@ from obs_spec import (
     ACTION_SUPPLY_COST, SUPPLY_EPS, TRAINING_SUPPLY_SLACK,
     DECISION_INTERVAL_SECONDS, ACTION_NAMES, build_obs_vector,
 )
-from parse_log import ParseLogger
+from telemetry.parse_log import ParseLogger
+from telemetry.console import configure_logging
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -77,8 +78,10 @@ MAX_PRODUCTION_LAG_SECONDS = 180.0
 
 MIN_REPLAY_BUILD = 73286   # 4.0.0 — older replays are unreadable here
 
-# Where parse logs are written (matches LOG_DIR in protoss_bot.py).
-LOG_DIR = r"C:\dev\BetaStar\logs"
+from paths import DEFAULT_DATASET, DEFAULT_LOG_DIR, DEFAULT_REPLAY_DIR
+
+# Structured parser diagnostics are kept outside the source tree.
+LOG_DIR = str(DEFAULT_LOG_DIR)
 
 # ---------------------------------------------------------------------------
 # sc2reader unit name -> canonical obs_spec name
@@ -718,8 +721,8 @@ class WindowedState:
 class ReplayParser:
     def __init__(
         self,
-        replay_folder=r"C:\dev\BetaStar\replays\raw",
-        output_file=r"C:\dev\BetaStar\replays\parsed\dataset.npz",
+        replay_folder=str(DEFAULT_REPLAY_DIR),
+        output_file=str(DEFAULT_DATASET),
         debug=True,
         log_dir=LOG_DIR,
     ):
@@ -1050,4 +1053,5 @@ class ReplayParser:
 
 
 if __name__ == "__main__":
+    configure_logging("INFO")
     ReplayParser().parse_replay_folder()

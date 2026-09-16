@@ -25,13 +25,14 @@ Outcomes
 
 Output
 ------
-    <log_dir>/decisions_<timestamp>.jsonl   one JSON object per decision
-    <log_dir>/decisions_<timestamp>.summary.txt
+    <log_dir>/decisions/decisions_<timestamp>.jsonl
+    <log_dir>/decisions/decisions_<timestamp>.summary.txt
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -41,7 +42,10 @@ from sc2.ids.upgrade_id import UpgradeId
 
 import obs_spec
 from actions import ACTIONS
-from helpers import MAX_CONCURRENT_BUILDS, DEFAULT_MAX_CONCURRENT_BUILDS
+from gameplay.helpers import MAX_CONCURRENT_BUILDS, DEFAULT_MAX_CONCURRENT_BUILDS
+
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # What each action is trying to produce, so its effect can be measured.
@@ -146,7 +150,7 @@ class DecisionLogger:
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         try:
-            directory = Path(log_dir)
+            directory = Path(log_dir) / "decisions"
             directory.mkdir(parents=True, exist_ok=True)
             self.path = directory / f"decisions_{stamp}.jsonl"
             self.summary_path = directory / f"decisions_{stamp}.summary.txt"
@@ -168,9 +172,9 @@ class DecisionLogger:
                     },
                 }
             })
-            print(f"[decision-log] writing to {self.path}")
+            logger.info("decision trace: %s", self.path)
         except Exception as exc:               # keep playing without logging
-            print(f"[decision-log] disabled ({exc})")
+            logger.warning("decision trace disabled: %s", exc)
             self.enabled = False
             self._fh = None
 
@@ -213,8 +217,10 @@ class DecisionLogger:
 
         if self.echo and outcome in ("noop", "suppressed"):
             tag = "SUPPRESSED" if outcome == "suppressed" else "NO-OP"
-            print(f"[decision-log] {tag}: {name} at {record['t']:.1f}s "
-                  f"had no effect")
+            logger.debug(
+                "decision %s | action=%s t=%.1fs",
+                tag.lower(), name, record["t"],
+            )
 
     # -- public API --------------------------------------------------------
 
@@ -317,7 +323,6 @@ class DecisionLogger:
         lines = []
         def out(text=""):
             lines.append(text)
-            print(text)
 
         out()
         out("=" * 68)
@@ -399,9 +404,14 @@ class DecisionLogger:
 
         try:
             self.summary_path.write_text("\n".join(lines), encoding="utf-8")
-            print(f"[decision-log] summary written to {self.summary_path}")
-        except Exception:
-            pass
+            logger.info(
+                "decision summary | decisions=%d no_ops=%d suppressed=%d file=%s",
+                self._n, sum(self._noop.values()),
+                sum(self._suppressed.values()), self.summary_path,
+            )
+            logger.debug("decision summary details\n%s", "\n".join(lines))
+        except Exception as exc:
+            logger.warning("could not write decision summary: %s", exc)
         try:
             if self._fh:
                 self._fh.close()

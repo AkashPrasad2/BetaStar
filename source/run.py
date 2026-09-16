@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import statistics
 import time
 from pathlib import Path
@@ -11,10 +12,12 @@ from pathlib import Path
 from sc2.data import Race, Result
 
 from episode import DIFFICULTIES, MAP_NAME, EpisodeConfig, run_episode
-from protoss_bot import DEVICE, LOG_DIR
+from gameplay.agent import DEVICE, LOG_DIR
+from paths import LATEST_PPO_CHECKPOINT
+from telemetry.console import configure_logging
 
 
-DEFAULT_PPO_CHECKPOINT = r"C:\dev\BetaStar\checkpoints\ppo_opening.pt"
+DEFAULT_PPO_CHECKPOINT = str(LATEST_PPO_CHECKPOINT)
 DEFAULT_PPO_TEMPERATURE = 1.0
 DEFAULT_OPENING_LIMIT_SECONDS = 200.0
 
@@ -44,7 +47,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--log-dir", default=LOG_DIR)
-    parser.add_argument("--no-decision-log", action="store_true")
+    parser.add_argument(
+        "--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO", help="Console verbosity (default: INFO).",
+    )
+    parser.add_argument(
+        "--decision-log", action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write a detailed JSONL trace for every policy decision.",
+    )
     args = parser.parse_args()
     if args.games < 1:
         parser.error("--games must be at least 1")
@@ -69,7 +80,7 @@ def _median_milestone(episodes: list[dict], name: str) -> float | None:
 
 
 def _write_report(args: argparse.Namespace, episodes: list[dict]) -> Path:
-    log_dir = Path(args.log_dir)
+    log_dir = Path(args.log_dir) / "evaluation"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"evaluation_{stamp}.json"
@@ -108,6 +119,8 @@ def _write_report(args: argparse.Namespace, episodes: list[dict]) -> Path:
 
 def main() -> None:
     args = parse_args()
+    configure_logging(args.log_level)
+    logger = logging.getLogger("betastar.run")
     episodes = []
 
     for game_index in range(args.games):
@@ -120,27 +133,31 @@ def main() -> None:
             checkpoint_path=args.checkpoint,
             device=args.device,
             temperature=args.temperature,
-            enable_decision_log=not args.no_decision_log,
+            enable_decision_log=args.decision_log,
             log_dir=args.log_dir,
             opening_limits_until=args.opening_limits_until or None,
         )
-        print(
-            f"\nEVALUATION GAME {game_index + 1}/{args.games} | "
-            f"Zerg {args.difficulty} | seed={seed} | "
-            f"limit={args.time_limit or 'none'}s")
+        logger.info(
+            "game %d/%d | Zerg %s | seed=%d | limit=%ss",
+            game_index + 1, args.games, args.difficulty, seed,
+            args.time_limit or "none",
+        )
         episode = run_episode(config).summary
         episode["game_index"] = game_index
         episodes.append(episode)
-        print(
-            f"Result={episode['result']} | goal_met={episode['goal_met']} | "
-            f"milestones={episode['milestone_times']}")
+        logger.info(
+            "result=%s | goal_met=%s | milestones=%s",
+            episode["result"], episode["goal_met"],
+            episode["milestone_times"],
+        )
 
     report_path = _write_report(args, episodes)
     goals = sum(e["goal_met"] for e in episodes)
     wins = sum(e["result"] == Result.Victory.name for e in episodes)
-    print(f"\nEvaluation complete: goals={goals}/{len(episodes)}, "
-          f"wins={wins}/{len(episodes)}")
-    print(f"Report: {report_path}")
+    logger.info(
+        "evaluation complete | goals=%d/%d | wins=%d/%d | report=%s",
+        goals, len(episodes), wins, len(episodes), report_path,
+    )
 
 
 if __name__ == "__main__":

@@ -6,8 +6,12 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.position import Point2
 from enum import Enum
+import logging
 import math
 import random
+
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -482,8 +486,10 @@ async def set_production_rally_points(bot: BotAI):
             if building.tag not in bot.rally_tags_set:
                 building(AbilityId.RALLY_UNITS, rally_point)
                 bot.rally_tags_set.add(building.tag)
-                print(f"[{bot.time:.0f}s] Rally point set for {unit_type.name} "
-                      f"-> {rally_point}")
+                logger.debug(
+                    "t=%.0fs rally set | building=%s target=%s",
+                    bot.time, unit_type.name, rally_point,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +537,10 @@ def _set_army_state(bot: BotAI, new_state: "ArmyState", reason: str):
     """
     if bot.army_state == new_state:
         return
-    print(f"[{bot.time:.0f}s] ARMY: {bot.army_state.value} -> "
-          f"{new_state.value} ({reason})")
+    logger.info(
+        "t=%.0fs army state | %s -> %s | %s",
+        bot.time, bot.army_state.value, new_state.value, reason,
+    )
     bot.army_state = new_state
     bot.army_state_since = bot.time
 
@@ -589,8 +597,10 @@ async def _do_rally(bot: BotAI, army):
     if idle_army:
         for unit in idle_army:
             unit.attack(staging)  # attack-move so they engage anything nearby
-        print(
-            f"[{bot.time:.0f}s] ARMY: Rallying {len(idle_army)} idle unit(s) -> {staging}")
+        logger.debug(
+            "t=%.0fs rallying %d idle army units to %s",
+            bot.time, len(idle_army), staging,
+        )
 
 
 def _do_defend(bot: BotAI, army):
@@ -630,7 +640,7 @@ def _do_attack(bot: BotAI, army):
             return
         if not bot.enemy_structures.closer_than(10, loc):
             bot.enemy_bases_cleared.add(loc)
-            print(f"[{bot.time:.0f}s] ARMY: Marked enemy start {loc} as cleared.")
+            logger.info("t=%.0fs enemy start cleared | %s", bot.time, loc)
         else:
             _issue_attack(bot, army, loc, "enemy start (structures present)")
             return
@@ -650,14 +660,16 @@ def _do_attack(bot: BotAI, army):
             return
 
     # Everything cleared — reset and sweep again
-    print(f"[{bot.time:.0f}s] ARMY: All known locations cleared, resetting.")
+    logger.info("t=%.0fs all known enemy locations cleared; resetting", bot.time)
     bot.enemy_bases_cleared.clear()
 
 
 def _issue_attack(bot: BotAI, army, target_pos: Point2, reason: str):
     """Issue attack-move to all army units."""
-    print(f"[{bot.time:.0f}s] ARMY [{bot.army_state.value}]: "
-          f"{army.amount} unit(s) -> {target_pos} ({reason})")
+    logger.debug(
+        "t=%.0fs army command | state=%s units=%d target=%s reason=%s",
+        bot.time, bot.army_state.value, army.amount, target_pos, reason,
+    )
     for unit in army:
         unit.attack(target_pos)
 
@@ -722,7 +734,7 @@ async def auto_merge_archons(bot: BotAI):
 
     recent[ht1.tag] = now
     recent[ht2.tag] = now
-    print(f"[{now:.0f}s] AUTO-MERGE: merging 2 high templars into an archon")
+    logger.debug("t=%.0fs merging two high templars into an archon", now)
 
 # ---------------------------------------------------------------------------
 # Warp-in helper

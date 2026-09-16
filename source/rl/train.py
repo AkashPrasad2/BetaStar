@@ -21,8 +21,9 @@ if str(SOURCE_DIR) not in sys.path:
 import torch
 
 from episode import DIFFICULTIES, EpisodeConfig, run_episode
-from protoss_bot import OPENING_STRUCTURE_LIMITS
-from rl.bot import PPOBot
+from gameplay.agent import OPENING_STRUCTURE_LIMITS
+from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR, LATEST_PPO_CHECKPOINT
+from rl.rollout import PPOBot
 from rl.ppo import (
     DEFAULT_PPO_TEMPERATURE,
     ActorCritic,
@@ -31,12 +32,11 @@ from rl.ppo import (
     frozen_policy_copy,
 )
 from rl.reward import OpeningRewardConfig, default_opening_reward
+from telemetry.console import configure_logging
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_IL_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "best_model.pt"
-DEFAULT_OUTPUT = PROJECT_ROOT / "checkpoints" / "ppo_opening.pt"
-DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
+DEFAULT_IL_CHECKPOINT = BEST_IL_CHECKPOINT
+DEFAULT_OUTPUT = LATEST_PPO_CHECKPOINT
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +70,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--decision-log", action="store_true",
                         help="Write the verbose per-decision diagnostic log.")
+    parser.add_argument(
+        "--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO", help="Console verbosity (default: INFO).",
+    )
 
     parser.add_argument("--learning-rate", type=float, default=1.0e-5)
     parser.add_argument("--ppo-epochs", type=int, default=4)
@@ -262,6 +266,7 @@ def _save_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    configure_logging(args.log_level)
     device = _device(args.device)
     torch.manual_seed(args.seed)
 
@@ -320,7 +325,7 @@ def main() -> None:
     best_path = output_path.with_name(
         f"{output_path.stem}_best{output_path.suffix}"
     )
-    log_dir = Path(args.log_dir)
+    log_dir = Path(args.log_dir) / "training"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     training_log_path = log_dir / f"rl_training_{stamp}.jsonl"

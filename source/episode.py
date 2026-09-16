@@ -20,7 +20,7 @@ from sc2.data import Difficulty, Race, Result
 from sc2.main import run_game
 from sc2.player import Bot, Computer
 
-from protoss_bot import CHECKPOINT_PATH, DEVICE, LOG_DIR, ProtossBot
+from gameplay.agent import CHECKPOINT_PATH, DEVICE, LOG_DIR, ProtossBot
 
 
 MAP_NAME = "AbyssalReefLE"
@@ -51,7 +51,7 @@ class EpisodeConfig:
     checkpoint_path: str = CHECKPOINT_PATH
     device: str = DEVICE
     temperature: float | None = None
-    enable_decision_log: bool = True
+    enable_decision_log: bool = False
     log_dir: str = LOG_DIR
     opening_limits_until: float | None = None
 

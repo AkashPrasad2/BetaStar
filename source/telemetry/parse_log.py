@@ -8,8 +8,8 @@ conflict spam to answer questions like "which actions are losing labels?".
 This writes the same information as data, following the same convention as
 decision_log.py:
 
-    <log_dir>/parse_<timestamp>.jsonl        one JSON object per replay
-    <log_dir>/parse_<timestamp>.summary.txt  human-readable aggregate
+    <log_dir>/parsing/parse_<timestamp>.jsonl
+    <log_dir>/parsing/parse_<timestamp>.summary.txt
 
 The jsonl is for slicing (find every replay with >50% do_nothing, or every
 conflict for action 31). The summary is for eyeballing a run and diffing it
@@ -21,10 +21,14 @@ Everything is best-effort: if the log cannot be opened, parsing continues.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 from collections import Counter
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
 
 
 def _pct(part: float, whole: float) -> float:
@@ -63,7 +67,7 @@ class ParseLogger:
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         try:
-            directory = Path(log_dir)
+            directory = Path(log_dir) / "parsing"
             directory.mkdir(parents=True, exist_ok=True)
             self.path = directory / f"parse_{stamp}.jsonl"
             self.summary_path = directory / f"parse_{stamp}.summary.txt"
@@ -73,9 +77,9 @@ class ParseLogger:
             record["_meta"].setdefault("started", stamp)
             self._write(record)
             if echo:
-                print(f"[parse-log] writing to {self.path}")
+                logger.info("parse trace: %s", self.path)
         except Exception as exc:  # noqa: BLE001 - never block parsing
-            print(f"[parse-log] disabled ({exc})")
+            logger.warning("parse trace disabled: %s", exc)
             self.enabled = False
 
     # -- internals ---------------------------------------------------------
@@ -292,10 +296,14 @@ class ParseLogger:
         try:
             self.summary_path.write_text(text, encoding="utf-8")
             if self.echo:
-                print(text)
-                print(f"[parse-log] summary written to {self.summary_path}")
+                logger.info(
+                    "parse summary | parsed=%d skipped=%d failed=%d file=%s",
+                    self.n_parsed, self.n_skipped, self.n_failed,
+                    self.summary_path,
+                )
+                logger.debug("parse summary details\n%s", text)
         except Exception as exc:  # noqa: BLE001
-            print(f"[parse-log] could not write summary ({exc})")
+            logger.warning("could not write parse summary: %s", exc)
 
         if self._fh:
             try:

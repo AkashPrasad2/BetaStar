@@ -35,9 +35,8 @@ from replay_parser import (  # noqa: E402
     calibrate_fps,
     is_command_event,
 )
+from paths import DEFAULT_REPLAY_DIR  # noqa: E402
 
-
-DEFAULT_REPLAY_DIR = Path(r"C:\dev\BetaStar\replays\raw")
 BUILDABLE_STRUCTURES = tuple(dict.fromkeys(
     BUILD_COMMAND_TO_STRUCTURE.values()))
 

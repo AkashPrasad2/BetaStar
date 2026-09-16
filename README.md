@@ -1,13 +1,12 @@
 # BetaStar
 
-A fully autonomous agent that plays StarCraft II and
-consistently defeats the built-in Medium bot. First learns from human
+A fully autonomous StarCraft II agent whose imitation-learning policy
+consistently defeats the built-in Medium bot. It learns from professional
 replays with a causal Transformer, then improves through PPO reinforcement
 learning in live games.
 
-Includes replay parsing, state and
-action design, supervised training, live inference, reinforcement learning,
-evaluation, and debugging.
+The repository includes replay parsing, state and action design, supervised
+training, live inference, reinforcement learning, evaluation, and debugging.
 
 ## Making StarCraft learnable
 
@@ -15,9 +14,14 @@ The game's real-time action space is massive: arbitrary unit selections,
 map coordinates, commands, and timings. Learning directly from those raw
 actions would require far more data and compute than I could afford.
 
-Inspired by Google's AplhaStar, the project simplifies the problem and focuses on macro decision making while abstracting more tedious tasks. The model chooses between 32 strategic actions such as building a structure, training a unit, etc.. The execution layer handles the mechanical details: choosing a worker, finding a legal build location, etc. greatly reducing the amount of training needed.
+Inspired by DeepMind's AlphaStar, the project focuses on macro decision-making
+while abstracting away mechanical tasks. The model chooses between 32 strategic
+actions, such as building a structure or training a unit. The execution layer
+handles details such as choosing a worker and finding a legal build location,
+greatly reducing the amount of training needed.
 
-Rule-based controllers handle routine behaviours such as worker distribution, army management, etc.. Learned poilcy is decision-based.
+Rule-based controllers handle routine behaviours such as worker distribution
+and army management, while the learned policy makes strategic decisions.
 
 ## Replay-to-game data pipeline
 
@@ -49,14 +53,18 @@ training data aligned with live gameplay.
 
 ### 1. Imitation learning
 
-The Transformer first learns from the decisions made in professional replays.
-This gives the agent a useful starting policy, to be tuned by self-play later.
+The Transformer first learns from decisions made in professional replays. This
+gives the agent a useful starting policy for PPO fine-tuning in live games.
 
-With IL alone, it could beat easy bots consistently but is prone to a mismatch in training/inference distributions causing very poor performance. As soon as it goes down a bad path it doesn't know what to do, leading to RL.
+The IL policy performs well on familiar states but struggles when its own
+mistakes push the game outside the replay distribution. PPO addresses this by
+letting the agent learn from states produced by its own actions.
 
 ### 2. PPO reinforcement learning
 
-With RL we can structure rewards to guide the agent and through self play, it becomes more robust, less prone to distribution shifts and behaves better in cases that diverge from what was seen in training data.
+PPO fine-tunes the policy through live games against the built-in Zerg bot.
+Structured rewards guide opening timings, production, and economy management
+while exposing the policy to states that do not appear in the replay dataset.
 
 The PPO system uses an actor-critic model, collects
 on-policy game rollouts, and uses GAE to connect
@@ -66,7 +74,11 @@ fine-tuning stable and limit catastrophic forgetting.
 
 ## Evaluation and observability
 
-Comprehensive logging system recording preferred actions, probabilities, mask interventions etc.. Also has an evaluator comparing IL and RL checkpoints.
+Optional JSONL traces record action probabilities, masking interventions, and
+execution outcomes. Concise console summaries are shown by default; use
+`--decision-log` for full traces and `--log-level DEBUG` for detailed console
+output. A fixed-seed evaluator compares IL and PPO checkpoints under the same
+conditions.
 
 ## Running the project
 
@@ -103,7 +115,6 @@ Compare IL, latest PPO, and best PPO on held-out seeds:
 python source\rl\eval.py --games 12 --modes sampled --seed 1000
 ```
 
-
 PPO training resumes from `checkpoints/ppo_opening.pt` by default. Pass
 `--fresh` to restart from the imitation-learning checkpoint.
 
@@ -114,14 +125,17 @@ source/
   run.py                 Play games with a trained policy
   replay_parser.py       Build IL sequences from SC2 replays
   model.py               Transformer model and IL training
-  protoss_bot.py         Live policy and action execution
   episode.py             Shared SC2 episode lifecycle
+  gameplay/
+    agent.py             Live policy and SC2 integration
+    helpers.py           Economy, construction, and army controllers
   rl/
     train.py             PPO training entry point
     eval.py              Fixed-seed IL/PPO benchmark
-    bot.py               On-policy rollout collection
+    rollout.py           On-policy rollout collection
     ppo.py               Actor-critic model, GAE, and PPO updates
     reward.py            Opening reward definition and tracking
+  telemetry/             Console and structured diagnostic logging
   analysis/              Replay, dataset, and model diagnostics
 tests/                   Automated parser and RL tests
 checkpoints/             IL and PPO model checkpoints

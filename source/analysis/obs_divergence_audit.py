@@ -26,7 +26,7 @@ Reports
 Usage
 -----
     python obs_divergence_audit.py
-    python obs_divergence_audit.py --replays C:/dev/BetaStar/replays/raw --limit 40
+    python source/analysis/obs_divergence_audit.py --replays replays/raw --limit 40
 """
 
 import argparse
@@ -58,8 +58,9 @@ from replay_parser import (  # noqa: E402
     is_command_event,
 )
 from obs_spec import TIME_NORM  # noqa: E402
+from paths import DEFAULT_REPLAY_DIR as PROJECT_REPLAY_DIR  # noqa: E402
 
-DEFAULT_REPLAY_DIR = r"C:\dev\BetaStar\replays\raw"
+DEFAULT_REPLAY_DIR = str(PROJECT_REPLAY_DIR)
 
 # Cancel-type abilities. The parser maps none of these, so every occurrence
 # leaves a pending counter permanently incremented.

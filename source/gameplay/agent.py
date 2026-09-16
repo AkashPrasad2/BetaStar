@@ -1,14 +1,15 @@
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 
+import logging
 import math
 import numpy as np
 
 from observation_wrapper import ObservationWrapper
 from obs_spec import ACTION_ID, DECISION_INTERVAL_SECONDS, NUM_ACTIONS
 from model import load_model, predict_action, MAX_CONTEXT
-from decision_log import DecisionLogger
-from helpers import (
+from telemetry.decision_log import DecisionLogger
+from gameplay.helpers import (
     ArmyState,
     auto_saturate_assimilators,
     set_production_rally_points,
@@ -18,12 +19,17 @@ from helpers import (
 )
 import actions
 
-CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
+
+logger = logging.getLogger(__name__)
+
+from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR
+
+CHECKPOINT_PATH = str(BEST_IL_CHECKPOINT)
 DEVICE = "cpu"
 
-# Per-decision introspection log. Set to False to turn it off.
-ENABLE_DECISION_LOG = True
-LOG_DIR = r"C:\dev\BetaStar\logs"
+# Per-decision JSONL tracing is opt-in; normal runs keep concise summaries.
+ENABLE_DECISION_LOG = False
+LOG_DIR = str(DEFAULT_LOG_DIR)
 
 # Exact build-count targets for the short PPO opening curriculum. Evaluation
 # may enforce them only during the opening and then release them for full-game
@@ -107,7 +113,7 @@ class ProtossBot(BotAI):
 
         # Workers reserved for a build (tag -> game time the hold expires), so
         # auto_saturate_assimilators and friends cannot steal a probe that is
-        # walking to a build site. See helpers.reserve_worker.
+        # walking to a build site. See gameplay.helpers.reserve_worker.
         self.reserved_workers: dict = {}
 
         # Production buildings that have had rally points set
@@ -244,8 +250,10 @@ class ProtossBot(BotAI):
             self.decision_log.log_decision(
                 self, iteration, obs, action_id, diagnostics)
 
-        print(
-            f"[{self.time:.1f}s] step={iteration}  action={actions.ACTIONS[action_id]} ({action_id})")
+        logger.debug(
+            "t=%.1fs step=%d action=%s (%d)",
+            self.time, iteration, actions.ACTIONS[action_id], action_id,
+        )
 
         # The execution layer reports why it did or did not act, so a dropped
         # decision is visible in the log instead of showing up as a mystery no-op.

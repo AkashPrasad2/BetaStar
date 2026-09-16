@@ -17,8 +17,9 @@ from replay_parser import (  # noqa: E402
     ReplayParser, WindowedState, GRID_INTERVAL_SECONDS,
 )
 from actions import ACTIONS  # noqa: E402
+from paths import DEFAULT_REPLAY_DIR as PROJECT_REPLAY_DIR  # noqa: E402
 
-DEFAULT_REPLAY_DIR = r"C:\dev\BetaStar\replays\raw"
+DEFAULT_REPLAY_DIR = str(PROJECT_REPLAY_DIR)
 
 
 def analyze_replay(replay_path: str, max_windows: int | None = None):

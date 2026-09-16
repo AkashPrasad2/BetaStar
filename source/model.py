@@ -21,12 +21,13 @@ from pathlib import Path
 
 from action_mask import apply_legal_mask, apply_training_mask
 from obs_spec import OBS_SIZE, NUM_ACTIONS, ACTION_NAMES
+from paths import CHECKPOINT_DIR as PROJECT_CHECKPOINT_DIR, DEFAULT_DATASET
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
+DATASET_PATH = str(DEFAULT_DATASET)
+CHECKPOINT_DIR = str(PROJECT_CHECKPOINT_DIR)
 
 # Transformer hyper-params
 D_MODEL = 128

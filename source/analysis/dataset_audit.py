@@ -12,7 +12,7 @@ Prints:
 
 Usage:
     python dataset_audit.py
-    python dataset_audit.py --path C:/dev/BetaStar/replays/parsed/dataset.npz
+    python source/analysis/dataset_audit.py --path replays/parsed/dataset.npz
     python dataset_audit.py --path ... --top 10   (show top-N rarest actions in detail)
 """
 
@@ -23,14 +23,14 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from obs_spec import OBS_SIZE, feature_names
+from obs_spec import OBS_SIZE, NUM_ACTIONS, feature_names
+from paths import DEFAULT_DATASET
 # Action names come from obs_spec, never a local copy: the private lists that
 # used to live here silently went stale when the action space changed.
 from obs_spec import ACTION_NAMES as ACTIONS   # noqa: E402
 
 # ---- match your project constants ----
-DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-NUM_ACTIONS = 35
+DATASET_PATH = str(DEFAULT_DATASET)
 
 
 # Feature names come from obs_spec so they cannot drift from the real layout.

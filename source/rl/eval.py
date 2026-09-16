@@ -22,9 +22,10 @@ if str(SOURCE_DIR) not in sys.path:
 import torch
 
 from episode import DIFFICULTIES, EpisodeConfig, run_episode
-from rl.bot import PPOBot
+from rl.rollout import PPOBot
 from rl.ppo import ActorCritic
 from rl.reward import OpeningRewardConfig, default_opening_reward
+from telemetry.console import configure_logging
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -67,6 +68,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--decision-log", action="store_true")
+    parser.add_argument(
+        "--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO", help="Console verbosity (default: INFO).",
+    )
     parser.add_argument(
         "--no-opening-limits", action="store_true",
         help="Disable the exact build-count constraints used during PPO.",
@@ -180,7 +185,10 @@ def _format_episode_targets(episode: dict, reward_config) -> str:
 def _write_report(args, device: str, reward_config, policies, runs) -> Path:
     if args.output is None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        output = Path(args.log_dir) / f"rl_evaluation_{stamp}.json"
+        output = (
+            Path(args.log_dir) / "evaluation" /
+            f"rl_evaluation_{stamp}.json"
+        )
     else:
         output = args.output
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +214,7 @@ def _write_report(args, device: str, reward_config, policies, runs) -> Path:
 
 def main() -> None:
     args = parse_args()
+    configure_logging(args.log_level)
     device = _device(args.device)
     reward_config = default_opening_reward()
     policies = []

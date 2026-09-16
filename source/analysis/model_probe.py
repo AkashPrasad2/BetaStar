@@ -14,7 +14,7 @@ from the dataset to answer:
 
 Usage:
     python model_probe.py
-    python model_probe.py --checkpoint C:/dev/BetaStar/checkpoints/best_model.pt
+    python source/analysis/model_probe.py --checkpoint checkpoints/best_model.pt
     python model_probe.py --checkpoint ... --n_seqs 50 --temperature 1.2
 """
 
@@ -24,12 +24,14 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-PROJECT_ROOT = r"C:\dev\BetaStar"
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+SOURCE_DIR = Path(__file__).resolve().parent.parent
+if str(SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIR))
 
-DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-CHECKPOINT_PATH = r"C:\dev\BetaStar\checkpoints\best_model.pt"
+from paths import BEST_IL_CHECKPOINT, DEFAULT_DATASET
+
+DATASET_PATH = str(DEFAULT_DATASET)
+CHECKPOINT_PATH = str(BEST_IL_CHECKPOINT)
 # Never hardcode these -- the obs layout changes (it went 70 -> 74 when the
 # resource encoding gained magnitude channels) and a stale literal here would
 # slice the action out of the wrong dataset column entirely.

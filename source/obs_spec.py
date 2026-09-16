@@ -87,7 +87,7 @@ ACTION_NAMES: list[str] = [
     #   * attack_enemy_base   - the parser sees 106,449 Attack events and
     #                           deliberately maps none of them, because attack
     #                           micro is not a macro decision. Attacking is
-    #                           handled by the army state machine in helpers.py.
+    #                           handled by the gameplay army state machine.
     "do_nothing",               # 0
     "train_probe",              # 1
     "build_pylon",              # 2
