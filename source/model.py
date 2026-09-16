@@ -1,154 +1,180 @@
 """
-SC2 Protoss Imitation Learning — LSTM Model + Training Script
-=============================================================
+SC2 Protoss Imitation Learning — Transformer Model + Training Script
+=====================================================================
 Architecture:
-    obs (53,) -> Linear encoder (53->64) -> LSTM (64->128, 1 layer)
-              -> MLP head (128->64->30 logits)
+    obs (OBS_SIZE,) -> input proj (OBS_SIZE->128) -> sinusoidal pos enc
+    -> 4x causal TransformerEncoderLayer (d=128, heads=4, ff=256)
+    -> LayerNorm -> Linear (128->NUM_ACTIONS logits)
 
-Key changes in this version:
-  - Legal-action masking applied consistently in BOTH the training loop
-    and predict_action, via the shared action_mask module.
-    The model now learns P(action | obs, action is legal), so the
-    conditional probabilities are calibrated for exactly the distribution
-    seen at runtime — not the full 30-action space.
-  - Temperature sampling replaces argmax in predict_action to avoid
-    probability-mass collapse onto a single action.
+Legal-action masking applied consistently in BOTH the training loop
+and predict_action, via the shared action_mask module.
 """
 
+import math
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pathlib import Path
 
-from action_mask import apply_legal_mask
+from action_mask import apply_legal_mask, apply_training_mask
+from obs_spec import OBS_SIZE, NUM_ACTIONS, ACTION_NAMES
+from paths import CHECKPOINT_DIR as PROJECT_CHECKPOINT_DIR, DEFAULT_DATASET
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DATASET_PATH = r"C:\dev\BetaStar\replays\parsed\dataset.npz"
-CHECKPOINT_DIR = r"C:\dev\BetaStar\checkpoints"
+DATASET_PATH = str(DEFAULT_DATASET)
+CHECKPOINT_DIR = str(PROJECT_CHECKPOINT_DIR)
 
-OBS_SIZE = 57   # 6 base + 15 structures + 8 units + 15 pending structs + 8 pending units + 1 opp + 4 idle
-NUM_ACTIONS = 34   # action 0 = do_nothing, kept for index stability
-
-# Model hyper-params
-ENCODER_DIM = 64
-LSTM_HIDDEN = 128
-LSTM_LAYERS = 1
-HEAD_HIDDEN = 64
-DROPOUT = 0.3
+# Transformer hyper-params
+D_MODEL = 128
+NHEAD = 4
+NUM_LAYERS = 4
+DIM_FEEDFORWARD = 256
+DROPOUT = 0.1
+MAX_SEQ_LEN = 2048   # positional encoding capacity
 
 # Training hyper-params
-BATCH_SIZE = 32
-EPOCHS = 60
+BATCH_SIZE = 16
+EPOCHS = 80  # rarely improves beyond this
 LR = 3e-4
 VAL_SPLIT = 0.15
 SEED = 54
 
-# "accuracy" = save model with best validation accuracy (better generalization)
-# "loss" = save model with lowest validation loss (better imitation)
-MODEL_SELECTION = "loss"  # Change to "accuracy" to switch
+# Which validation metric decides the saved checkpoint.
+#   "macro_f1" — mean of per-class F1 (default). Every action counts equally.
+#   "accuracy" — fraction of windows predicted correctly.
+#   "loss"     — the class-weighted cross-entropy.
+# Macro-F1 averages per-class F1 unweighted, so build_cyberneticscore contributes
+# 1/32 = 3.1% of the score instead of 0.45% -- about 7x more leverage.
+MODEL_SELECTION = "macro_f1"
+
+# Classes with fewer than this many validation labels are left out of the macro average
+MACRO_F1_MIN_SUPPORT = 10
 
 # keep the decisions diverse (not applied during training, only inference)
-INFERENCE_TEMPERATURE = 0.8
+INFERENCE_TEMPERATURE = 1.5
+
+# Cap context window at inference to bound latency. 512 windows is ~34 minutes
+MAX_CONTEXT = 512
 
 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
 
-class ProtossLSTMModel(nn.Module):
-    """
-    Encodes each game-state observation, feeds it through an LSTM that carries
-    context across the whole game, then decodes each hidden state into action
-    logits via a small MLP.
+# Sinusoidal pos encoding for transformer: bounded values between -1 and 1, and better computations with trig identities
+class SinusoidalPositionalEncoding(nn.Module):
+    """Fixed sinusoidal positional encoding (Vaswani et al. 2017)."""
 
-    Training: full padded sequences via PackedSequence.
-    Inference: one step at a time, (h, c) carried externally by the bot.
+    def __init__(self, d_model: int, max_len: int = 2048):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float()
+            * -(math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))   # (1, max_len, d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, T, d_model) -> (B, T, d_model)"""
+        return x + self.pe[:, :x.size(1)]
+
+
+class ProtossTransformerModel(nn.Module):
+    """
+    Causal transformer for sequential action prediction.
+    Takes a sequence of game-state observations and predicts an action at
+    each timestep, attending only to the current and past observations.
     """
 
     def __init__(
         self,
-        obs_size:    int = OBS_SIZE,
-        encoder_dim: int = ENCODER_DIM,
-        lstm_hidden: int = LSTM_HIDDEN,
-        lstm_layers: int = LSTM_LAYERS,
-        head_hidden: int = HEAD_HIDDEN,
-        num_actions: int = NUM_ACTIONS,
-        dropout:     float = DROPOUT,
+        obs_size:        int = OBS_SIZE,
+        d_model:         int = D_MODEL,
+        nhead:           int = NHEAD,
+        num_layers:      int = NUM_LAYERS,
+        dim_feedforward: int = DIM_FEEDFORWARD,
+        dropout:         float = DROPOUT,
+        num_actions:     int = NUM_ACTIONS,
+        max_seq_len:     int = MAX_SEQ_LEN,
     ):
         super().__init__()
-        self.lstm_hidden = lstm_hidden
-        self.lstm_layers = lstm_layers
+        # Used by the PPO actor-critic wrapper to size its value head. This is
+        # architecture metadata only; it adds no checkpoint parameters.
+        self.d_model = d_model
 
-        self.encoder = nn.Sequential(
-            nn.Linear(obs_size, encoder_dim),
-            nn.LayerNorm(encoder_dim),
+        # encode input vector to 128
+        self.input_proj = nn.Sequential(
+            nn.Linear(obs_size, d_model),
+            nn.LayerNorm(d_model),
             nn.GELU(),
         )
 
-        self.lstm = nn.LSTM(
-            input_size=encoder_dim,
-            hidden_size=lstm_hidden,
-            num_layers=lstm_layers,
+        self.pos_encoding = SinusoidalPositionalEncoding(d_model, max_seq_len)
+
+        # Causal transformer with masking
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
             batch_first=True,
-            dropout=dropout if lstm_layers > 1 else 0.0,
+            activation='gelu',
+            norm_first=True,   # Pre-norm for better training stability
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers
         )
 
-        self.head = nn.Sequential(
-            nn.Linear(lstm_hidden, head_hidden),
-            nn.LayerNorm(head_hidden),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden, num_actions),
+        self.output_head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, num_actions),
         )
 
         self._init_weights()
 
     def _init_weights(self):
-        for name, p in self.lstm.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(p)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(p)
-            elif "bias" in name:
-                nn.init.zeros_(p)
-                n = p.size(0)
-                p.data[n // 4: n // 2].fill_(1.0)  # forget gate bias = 1
-        for m in self.head.modules():
+        for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
-                nn.init.zeros_(m.bias)
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-    def forward(
-        self,
-        x:       torch.Tensor,
-        lengths: torch.Tensor,
-        hc:      tuple | None = None,
-    ) -> tuple[torch.Tensor, tuple]:
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
+        Args:
+            x: (B, T, obs_size) — sequence of observations
         Returns:
-            logits — (batch, seq_len, num_actions)
-            hc     — (h_n, c_n) final hidden/cell states
+            hidden states: (B, T, d_model)
         """
-        batch, seq_len, _ = x.shape
-        enc = self.encoder(x.reshape(-1, x.size(-1))
-                           ).reshape(batch, seq_len, -1)
-        packed = pack_padded_sequence(
-            enc, lengths.cpu(), batch_first=True, enforce_sorted=False)
-        packed_out, hc_out = self.lstm(packed, hc)
-        out, _ = pad_packed_sequence(
-            packed_out, batch_first=True, total_length=seq_len)
-        logits = self.head(out)
-        return logits, hc_out
+        _, T, _ = x.shape
 
-    def init_hidden(self, batch_size: int = 1, device: str = "cpu"):
-        zeros = torch.zeros(
-            self.lstm_layers, batch_size, self.lstm_hidden, device=device)
-        return (zeros, zeros.clone())
+        # Project to embedding space
+        h = self.input_proj(x)              # (B, T, d_model)
+
+        # Add positional encoding
+        h = self.pos_encoding(h)            # (B, T, d_model)
+
+        # Generate causal mask (upper-triangular = -inf)
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(
+            T, device=x.device
+        )
+
+        # Apply transformer with causal masking
+        h = self.transformer(h, mask=causal_mask, is_causal=True)
+
+        return h
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return action logits for every observation in the sequence."""
+        return self.output_head(self.encode(x))
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +183,7 @@ class ProtossLSTMModel(nn.Module):
 
 class SequenceDataset(Dataset):
     """
-    Each item is one replay: (obs_tensor (T, OBS_SIZE), act_tensor (T,)).
+    Each object represents one replay: (obs_tensor (T, OBS_SIZE), action_tensor (T,)).
     """
 
     def __init__(self, path: str):
@@ -185,15 +211,12 @@ class SequenceDataset(Dataset):
 def collate_sequences(batch):
     """
     Pad variable-length sequences. Padding value -100 is ignored by
-    CrossEntropyLoss(ignore_index=-100).  Obs padding is 0.0 — padded
-    positions have all structure/unit counts at zero, but action 0
-    (do_nothing) is always legal so softmax never sees all-(-inf) input.
+    CrossEntropyLoss(ignore_index=-100).
     """
     obs_list, act_list = zip(*batch)
-    lengths = torch.tensor([len(o) for o in obs_list], dtype=torch.long)
     obs_pad = pad_sequence(obs_list, batch_first=True, padding_value=0.0)
     act_pad = pad_sequence(act_list, batch_first=True, padding_value=-100)
-    return obs_pad, act_pad, lengths
+    return obs_pad, act_pad
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +231,7 @@ def compute_class_weights(
         for a in act_seq.numpy():
             counts[int(a)] += 1
     counts = np.where(counts == 0, 1.0, counts)
-    weights = 1.0 / np.sqrt(counts)   # sqrt dampens extremes vs plain 1/n
+    weights = 1.0 / np.sqrt(counts)
     weights /= weights.sum()
     return torch.tensor(weights, dtype=torch.float32)
 
@@ -218,24 +241,13 @@ def _apply_mask_real_only(
     flat_obs:    torch.Tensor,
     flat_acts:   torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Apply the legal mask only to real (non-padded) positions.
-
-    Padded positions have flat_acts == -100.  Their logits are never used
-    in the loss (ignore_index=-100) so masking them is unnecessary — and
-    masking them with obs=0 (all-zero padding) can produce all-(-inf) rows
-    if do_nothing somehow gets blocked, causing NaN in softmax.
-
-    We clone the full tensor and only write -inf into real positions that
-    are actually illegal, leaving padded rows completely untouched.
-    """
-    real_mask = flat_acts != -100                        # (B*T,) bool
+    """Apply the relaxed TRAINING mask only to real (non-padded) positions."""
+    real_mask = flat_acts != -100
     masked = flat_logits.clone()
 
     if real_mask.any():
-        real_logits = flat_logits[real_mask]             # (N_real, A)
-        real_obs = flat_obs[real_mask]                # (N_real, OBS_SIZE)
-        real_logits = apply_legal_mask(real_logits, real_obs)
+        real_logits = apply_training_mask(
+            flat_logits[real_mask], flat_obs[real_mask])
         masked[real_mask] = real_logits
 
     return masked
@@ -245,13 +257,12 @@ def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
 
-    for obs_pad, act_pad, lengths in loader:
+    for obs_pad, act_pad in loader:
         obs_pad = obs_pad.to(device)
         act_pad = act_pad.to(device)
-        lengths = lengths.to(device)
 
         optimizer.zero_grad()
-        logits, _ = model(obs_pad, lengths)
+        logits = model(obs_pad)
 
         B, T, A = logits.shape
         flat_logits = logits.reshape(B * T, A)
@@ -260,10 +271,6 @@ def train_epoch(model, loader, optimizer, criterion, device):
 
         flat_logits = _apply_mask_real_only(flat_logits, flat_obs, flat_acts)
 
-        # Safety check — any remaining -inf on a real position means the label
-        # contradicts the mask. Rather than clamping (which explodes the loss
-        # via class weights * 1e9), silence those positions by setting their
-        # label to -100 so CrossEntropyLoss ignores them, same as padding.
         real = flat_acts != -100
         if real.any():
             real_idx = real.nonzero(as_tuple=True)[0]
@@ -272,11 +279,10 @@ def train_epoch(model, loader, optimizer, criterion, device):
             bad = ~label_logits[:, 0].isfinite()
             if bad.any():
                 n_bad = bad.sum().item()
-                print(f"  [WARN] {n_bad} label/mask conflicts remain in dataset "
-                      f"— silencing those positions. Run conflict_diagnostic.py.")
-                bad_idx = real_idx[bad]
+                print(f"  [WARN] {n_bad} label/mask conflicts -- silencing. "
+                      f"Run conflict_diagnostic.py.")
                 flat_acts = flat_acts.clone()
-                flat_acts[bad_idx] = -100
+                flat_acts[real_idx[bad]] = -100
 
         loss = criterion(flat_logits, flat_acts)
         loss.backward()
@@ -293,16 +299,46 @@ def train_epoch(model, loader, optimizer, criterion, device):
 
 
 @torch.no_grad()
+def macro_f1_from_counts(tp, fp, fn, min_support: int = 0):
+    """
+    Per-class F1 and their unweighted mean.
+
+    Returns (macro_f1, per_class) where per_class maps class index ->
+    (f1, precision, recall, support). Classes with support below min_support are
+    reported but excluded from the mean; classes absent from the data entirely
+    are excluded outright rather than counted as zero, since otherwise the metric
+    would swing on whether a rare action happened to land in the val split.
+    """
+    per_class = {}
+    scores = []
+    for c in range(len(tp)):
+        support = int(tp[c] + fn[c])
+        if support == 0 and fp[c] == 0:
+            continue                      # class does not occur and is never predicted
+        precision = tp[c] / (tp[c] + fp[c]) if (tp[c] + fp[c]) else 0.0
+        recall = tp[c] / (tp[c] + fn[c]) if (tp[c] + fn[c]) else 0.0
+        f1 = (2 * precision * recall / (precision + recall)
+              if (precision + recall) else 0.0)
+        per_class[c] = (f1, precision, recall, support)
+        if support >= max(min_support, 1):
+            scores.append(f1)
+    return (sum(scores) / len(scores) if scores else 0.0), per_class
+
+
 def eval_epoch(model, loader, criterion, device):
+    """Returns (loss, accuracy, macro_f1, per_class_f1)."""
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
+    # Per-class confusion counts, accumulated on GPU then read once at the end.
+    tp = torch.zeros(NUM_ACTIONS, dtype=torch.long, device=device)
+    fp = torch.zeros(NUM_ACTIONS, dtype=torch.long, device=device)
+    fn = torch.zeros(NUM_ACTIONS, dtype=torch.long, device=device)
 
-    for obs_pad, act_pad, lengths in loader:
+    for obs_pad, act_pad in loader:
         obs_pad = obs_pad.to(device)
         act_pad = act_pad.to(device)
-        lengths = lengths.to(device)
 
-        logits, _ = model(obs_pad, lengths)
+        logits = model(obs_pad)
 
         B, T, A = logits.shape
         flat_logits = logits.reshape(B * T, A)
@@ -311,7 +347,6 @@ def eval_epoch(model, loader, criterion, device):
 
         flat_logits = _apply_mask_real_only(flat_logits, flat_obs, flat_acts)
 
-        # Same silence-on-conflict as train_epoch
         real = flat_acts != -100
         if real.any():
             real_idx = real.nonzero(as_tuple=True)[0]
@@ -329,7 +364,17 @@ def eval_epoch(model, loader, criterion, device):
         total += real.sum().item()
         total_loss += loss.item() * real.sum().item()
 
-    return total_loss / total, correct / total
+        # Confusion counts over real positions only.
+        p_real = preds[real]
+        y_real = flat_acts[real]
+        hit = p_real == y_real
+        tp += torch.bincount(y_real[hit], minlength=NUM_ACTIONS)
+        fp += torch.bincount(p_real[~hit], minlength=NUM_ACTIONS)
+        fn += torch.bincount(y_real[~hit], minlength=NUM_ACTIONS)
+
+    macro_f1, per_class = macro_f1_from_counts(
+        tp.tolist(), fp.tolist(), fn.tolist(), MACRO_F1_MIN_SUPPORT)
+    return total_loss / total, correct / total, macro_f1, per_class
 
 
 # ---------------------------------------------------------------------------
@@ -366,73 +411,93 @@ def train():
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
         collate_fn=collate_sequences, num_workers=0)
 
-    model = ProtossLSTMModel().to(device)
+    model = ProtossTransformerModel().to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {total_params:,}")
 
     class_weights = compute_class_weights(dataset, NUM_ACTIONS).to(device)
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weights, ignore_index=-100)
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LR, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, ignore_index=-100)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
 
     Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)
 
-    if MODEL_SELECTION == "accuracy":
-        best_val_metric = 0.0
-        metric_name = "accuracy"
-        def is_better(new, best): return new > best
-    else:  # "loss"
-        best_val_metric = float('inf')
-        metric_name = "loss"
+    # Loss is minimized; accuracy and macro-F1 are maximized.
+    _LOWER_IS_BETTER = MODEL_SELECTION == "loss"
+    if _LOWER_IS_BETTER:
+        best_val_metric = float("inf")
         def is_better(new, best): return new < best
+    else:
+        best_val_metric = -1.0
+        def is_better(new, best): return new > best
 
     best_path = Path(CHECKPOINT_DIR) / "best_model.pt"
+    best_per_class = {}
 
+    print(f"\nSelecting checkpoints on: {MODEL_SELECTION}")
     print(f"\n{'Epoch':>6} {'Train Loss':>11} {'Train Acc':>10} "
-          f"{'Val Loss':>10} {'Val Acc':>9} {'LR':>10}")
-    print("-" * 65)
+          f"{'Val Loss':>10} {'Val Acc':>9} {'Val MacroF1':>12} {'LR':>10}")
+    print("-" * 78)
 
     for epoch in range(1, EPOCHS + 1):
         train_loss, train_acc = train_epoch(
             model, train_loader, optimizer, criterion, device)
-        val_loss, val_acc = eval_epoch(
+        val_loss, val_acc, val_f1, per_class = eval_epoch(
             model, val_loader, criterion, device)
         scheduler.step()
 
         lr = scheduler.get_last_lr()[0]
         print(f"{epoch:>6} {train_loss:>11.4f} {train_acc:>10.3%} "
-              f"{val_loss:>10.4f} {val_acc:>9.3%} {lr:>10.2e}")
+              f"{val_loss:>10.4f} {val_acc:>9.3%} {val_f1:>12.4f} {lr:>10.2e}")
 
-        # Select metric based on MODEL_SELECTION
-        current_metric = val_acc if MODEL_SELECTION == "accuracy" else val_loss
+        current_metric = {
+            "accuracy": val_acc,
+            "macro_f1": val_f1,
+            "loss":     val_loss,
+        }[MODEL_SELECTION]
 
         if is_better(current_metric, best_val_metric):
             best_val_metric = current_metric
+            best_per_class = per_class
             torch.save({
-                "epoch":       epoch,
-                "model_state": model.state_dict(),
-                "val_loss":    val_loss,
-                "val_acc":     val_acc,
-                "obs_size":    OBS_SIZE,
-                "num_actions": NUM_ACTIONS,
-                "encoder_dim": ENCODER_DIM,
-                "lstm_hidden": LSTM_HIDDEN,
-                "lstm_layers": LSTM_LAYERS,
-                "head_hidden": HEAD_HIDDEN,
+                "epoch":           epoch,
+                "model_state":     model.state_dict(),
+                "val_loss":        val_loss,
+                "val_acc":         val_acc,
+                "val_macro_f1":    val_f1,
+                "selection":       MODEL_SELECTION,
+                "obs_size":        OBS_SIZE,
+                "num_actions":     NUM_ACTIONS,
+                "d_model":         D_MODEL,
+                "nhead":           NHEAD,
+                "num_layers":      NUM_LAYERS,
+                "dim_feedforward":  DIM_FEEDFORWARD,
+                "max_seq_len":     MAX_SEQ_LEN,
             }, best_path)
-            if MODEL_SELECTION == "accuracy":
-                print(
-                    f"         ↑ new best (acc={val_acc:.3%}) saved to {best_path}")
-            else:
-                print(
-                    f"         ↑ new best (loss={val_loss:.4f}) saved to {best_path}")
+            shown = (f"{best_val_metric:.3%}" if MODEL_SELECTION == "accuracy"
+                     else f"{best_val_metric:.4f}")
+            print(f"         ^ new best ({MODEL_SELECTION}={shown})"
+                  f" saved to {best_path}")
 
-    if MODEL_SELECTION == "accuracy":
-        print(f"\nTraining complete. Best val accuracy: {best_val_metric:.3%}")
-    else:
-        print(f"\nTraining complete. Best val loss: {best_val_metric:.4f}")
+    shown = (f"{best_val_metric:.3%}" if MODEL_SELECTION == "accuracy"
+             else f"{best_val_metric:.4f}")
+    print(f"\nTraining complete. Best val {MODEL_SELECTION}: {shown}")
+
+    # Per-class report for the saved checkpoint. This is the diagnostic that
+    # accuracy hid: an action with F1 near zero is one the bot will essentially
+    # never take, no matter how good the headline number looks.
+    if best_per_class:
+        print(f"\n{'action':<26}{'F1':>8}{'prec':>8}{'recall':>8}{'support':>9}")
+        print("-" * 59)
+        rows = sorted(best_per_class.items(), key=lambda kv: kv[1][0])
+        for cid, (f1, prec, rec, sup) in rows:
+            flag = ""
+            if sup < MACRO_F1_MIN_SUPPORT:
+                flag = "  (excluded, low support)"
+            elif f1 < 0.05:
+                flag = "  <-- effectively never predicted"
+            name = ACTION_NAMES[cid] if cid < len(ACTION_NAMES) else str(cid)
+            print(f"{name:<26}{f1:>8.3f}{prec:>8.3f}{rec:>8.3f}{sup:>9}{flag}")
     return model
 
 
@@ -440,15 +505,16 @@ def train():
 # Inference helpers
 # ---------------------------------------------------------------------------
 
-def load_model(checkpoint_path: str, device: str = "cpu") -> ProtossLSTMModel:
+def load_model(checkpoint_path: str, device: str = "cpu") -> ProtossTransformerModel:
     ckpt = torch.load(checkpoint_path, map_location=device)
-    model = ProtossLSTMModel(
+    model = ProtossTransformerModel(
         obs_size=ckpt["obs_size"],
         num_actions=ckpt["num_actions"],
-        encoder_dim=ckpt.get("encoder_dim", ENCODER_DIM),
-        lstm_hidden=ckpt.get("lstm_hidden", LSTM_HIDDEN),
-        lstm_layers=ckpt.get("lstm_layers", LSTM_LAYERS),
-        head_hidden=ckpt.get("head_hidden", HEAD_HIDDEN),
+        d_model=ckpt.get("d_model", D_MODEL),
+        nhead=ckpt.get("nhead", NHEAD),
+        num_layers=ckpt.get("num_layers", NUM_LAYERS),
+        dim_feedforward=ckpt.get("dim_feedforward", DIM_FEEDFORWARD),
+        max_seq_len=ckpt.get("max_seq_len", MAX_SEQ_LEN),
     )
     model.load_state_dict(ckpt["model_state"])
     model.eval()
@@ -456,46 +522,86 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ProtossLSTMModel:
 
 
 def predict_action(
-    model:       ProtossLSTMModel,
-    obs:         list[float],
-    hc:          tuple | None = None,
+    model:       ProtossTransformerModel,
+    obs_history: list[list[float]],
     device:      str = "cpu",
     temperature: float = INFERENCE_TEMPERATURE,
-) -> tuple[int, tuple]:
+    return_diagnostics: bool = False,
+    top_k:       int = 5,
+    legal_mask=None,
+):
     """
-    Single-step inference with legal masking + temperature sampling.
-
-    The mask ensures only prerequisite-satisfied actions are candidates,
-    matching the distribution the model was trained on.  Temperature
-    sampling (default 0.8) avoids argmax probability collapse while
-    staying close to the model's top preference.
+    Sequence inference with legal masking + temperature sampling.
 
     Args:
-        model:       trained ProtossLSTMModel
-        obs:         flat observation vector (length OBS_SIZE)
-        hc:          LSTM hidden/cell state from previous step (None = zeros)
+        model:       trained ProtossTransformerModel
+        obs_history: list of flat observation vectors (oldest first)
         device:      torch device string
-        temperature: softmax temperature. Lower = sharper, higher = more random.
+        temperature: softmax temperature
+        return_diagnostics: also return a dict describing the decision
+        top_k:       how many candidates to report in the diagnostics
 
     Returns:
-        (action_id, new_hc)
+        action_id, or (action_id, diagnostics) if return_diagnostics is set.
     """
-    x = torch.tensor(obs, dtype=torch.float32).unsqueeze(
-        0).unsqueeze(0).to(device)
-    obs_2d = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
-    lengths = torch.tensor([1], dtype=torch.long)
+    x = torch.tensor(obs_history, dtype=torch.float32).unsqueeze(0).to(device)
+    # x: (1, T, obs_size)
 
     with torch.no_grad():
-        logits, hc_out = model(x, lengths, hc=hc)
+        logits = model(x)   # (1, T, num_actions)
 
-    # Apply legal mask — same logic as the training loop
-    masked_logits = apply_legal_mask(logits[0, 0].unsqueeze(0), obs_2d)
+    # Take the last position's logits and the last obs for masking
+    last_logits = logits[:, -1, :]   # (1, num_actions)
+    last_obs = x[:, -1, :]           # (1, obs_size)
 
-    # Temperature sampling over the legal actions
+    masked_logits = apply_legal_mask(last_logits, last_obs)
+    if legal_mask is not None:
+        external_mask = torch.as_tensor(
+            legal_mask, dtype=torch.bool, device=device
+        ).reshape(1, -1)
+        if external_mask.shape != masked_logits.shape:
+            raise ValueError(
+                "legal_mask must contain exactly one value per action"
+            )
+        masked_logits = masked_logits.masked_fill(
+            ~external_mask, float("-inf")
+        )
     probs = torch.softmax(masked_logits[0] / temperature, dim=-1)
     action_id = int(torch.multinomial(probs, 1).item())
 
-    return action_id, hc_out
+    if not return_diagnostics:
+        return action_id
+
+    # Diagnostics: what the model wanted vs what the mask permitted.
+    from actions import ACTIONS
+
+    def name_of(idx: int) -> str:
+        return ACTIONS[idx] if 0 <= idx < len(ACTIONS) else str(idx)
+
+    raw = last_logits[0]
+    masked = masked_logits[0]
+    raw_top1 = int(raw.argmax().item())
+    masked_top1 = int(masked.argmax().item())
+    k = min(top_k, probs.numel())
+    top = torch.topk(probs, k)
+
+    diagnostics = {
+        "n_legal":        int(torch.isfinite(masked).sum().item()),
+        "raw_top1":       raw_top1,
+        "raw_top1_name":  name_of(raw_top1),
+        "masked_top1":    masked_top1,
+        "masked_top1_name": name_of(masked_top1),
+        # True when the model's preferred action was illegal and the mask
+        # forced a different choice.
+        "blocked_top1":   bool(raw_top1 != masked_top1),
+        "chosen_prob":    round(float(probs[action_id]), 4),
+        "greedy_prob":    round(float(probs.max()), 4),
+        "top_named":      [
+            [name_of(int(i)), round(float(p), 4)]
+            for p, i in zip(top.values.tolist(), top.indices.tolist())
+        ],
+    }
+    return action_id, diagnostics
 
 
 if __name__ == "__main__":

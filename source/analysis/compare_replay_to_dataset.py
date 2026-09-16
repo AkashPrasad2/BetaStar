@@ -9,17 +9,19 @@ This script shows exactly what happens when a replay is parsed into training dat
 - Final action distribution in the training data
 """
 import sc2reader
-from sc2reader.events import BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent
 import numpy as np
 import sys
-import os
+from pathlib import Path
 
 # Add parent directory to path to import replay_parser
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from replay_parser import ReplayParser, GRID_INTERVAL_SECONDS
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from replay_parser import (
+    ReplayParser, GRID_INTERVAL_SECONDS, OBS_SIZE, is_command_event,
+)
+from paths import DEFAULT_REPLAY_DIR
 
 # Load the same replay
-replay_path = r"C:\dev\BetaStar\replays\raw\Abyssal Reef LE (54).SC2Replay"
+replay_path = DEFAULT_REPLAY_DIR / "Railgan v ShaDoWn - Abyssal Reef LE.SC2Replay"
 print(f"Loading replay: {replay_path}")
 print("=" * 120)
 replay = sc2reader.load_replay(replay_path, load_level=4)
@@ -42,7 +44,7 @@ print("=" * 120)
 # Collect all command events from replay
 all_commands = []
 for event in replay.events:
-    if isinstance(event, (BasicCommandEvent, TargetPointCommandEvent, TargetUnitCommandEvent)):
+    if is_command_event(event):
         if event.player.pid == protoss_player.pid:
             all_commands.append((event.second, event.ability_name))
 
@@ -59,43 +61,10 @@ print("Only mapped abilities become training labels. Unmapped abilities are igno
 parser = ReplayParser(debug=False)
 EVENT_TO_ACTION = parser.EVENT_TO_ACTION
 
-# Action ID to name mapping (must cover all 34 actions including gaps)
-ACTION_NAMES = {
-    0: "do_nothing",
-    1: "train_probe",
-    2: "build_pylon",
-    3: "build_gateway",
-    4: "build_cyberneticscore",
-    5: "build_assimilator",
-    6: "build_nexus",
-    7: "build_forge",
-    8: "build_stargate",
-    9: "build_robotics_facility",
-    10: "build_twilight_council",
-    11: "build_photon_cannon",
-    12: "build_fleet_beacon",
-    13: "build_templar_archive",
-    14: "train_zealot",
-    15: "train_stalker",
-    16: "train_immortal",
-    17: "train_voidray",
-    18: "train_carrier",
-    19: "train_high_templar",
-    20: "warp_in_zealot",
-    21: "warp_in_stalker",
-    22: "warp_in_high_templar",
-    23: "archon_warp",
-    24: "research_charge",
-    25: "research_warp_gate",
-    26: "upgrade_ground_weapons",
-    27: "upgrade_air_weapons",
-    28: "upgrade_shields",
-    29: "attack_enemy_base",
-    30: "train_adept",
-    31: "train_phoenix",
-    32: "train_colossus",
-    33: "warp_in_adept",
-}
+# Action names come from obs_spec, never a local copy: the private lists that
+# used to live here silently went stale when the action space changed.
+from obs_spec import ACTION_NAMES as _ACTION_LIST   # noqa: E402
+ACTION_NAMES = dict(enumerate(_ACTION_LIST))
 
 # Categorize all commands
 mapped_commands = []
@@ -155,7 +124,7 @@ print(f"\n{'='*120}")
 print("STEP 3: FINAL TRAINING DATA ANALYSIS")
 print("=" * 120)
 
-actions = seq[:, 57].astype(int)  # OBS_SIZE = 57, action is the last column
+actions = seq[:, OBS_SIZE].astype(int)  # action is the last column
 print(f"\nTotal windows in parsed sequence: {len(actions)}")
 print(f"Grid interval: {GRID_INTERVAL_SECONDS}s per window")
 print(f"Game duration covered: {len(actions) * GRID_INTERVAL_SECONDS}s ({len(actions) * GRID_INTERVAL_SECONDS / 60:.1f} minutes)\n")
