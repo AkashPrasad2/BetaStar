@@ -1,3 +1,5 @@
+# POC for a bot, getting famliar with the API.
+
 from sc2 import maps
 from sc2.bot_ai import BotAI
 from sc2.data import Difficulty, Race
