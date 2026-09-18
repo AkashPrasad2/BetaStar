@@ -275,6 +275,7 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
     poc_robo = poc("ROBOTICSFACILITY")
     poc_twilight = poc("TWILIGHTCOUNCIL")
     poc_temparch = poc("TEMPLARARCHIVE")
+    poc_fleet = poc("FLEETBEACON")
     # Warpgate has no pending slot — it is a morph, never "under construction".
     poc_warpgate = done("WARPGATE")
 
@@ -293,6 +294,16 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
     poc_gateway_type = poc("GATEWAY") or done("WARPGATE")
 
     under_cybcore_cap = obs[_IDX["CYBERNETICSCORE"]] < (1.5 / 10.0)
+    level_one_committed = (1.0 / obs_spec.UPGRADE_NORM) - _EPS
+    ground_tech_ready = (
+        obs[IDX_GROUND_WEAPONS_LVL] < level_one_committed or poc_twilight
+    )
+    shields_tech_ready = (
+        obs[IDX_SHIELDS_LVL] < level_one_committed or poc_twilight
+    )
+    air_tech_ready = (
+        obs[IDX_AIR_WEAPONS_LVL] < level_one_committed or poc_fleet
+    )
 
     has_army = any(
         obs[UNIT_IDX[u]] > _EPS
@@ -328,9 +339,18 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
         "warp_in_high_templar": (poc_warpgate and poc_temparch, "needs warpgate and poc_temparch"),
         "research_charge": (poc_twilight, "needs poc_twilight"),
         "research_warp_gate": (poc_cybcore, "needs poc_cybcore"),
-        "upgrade_ground_weapons": (has_forge, "needs forge"),
-        "upgrade_air_weapons": (poc_cybcore, "needs poc_cybcore"),
-        "upgrade_shields": (has_forge, "needs forge"),
+        "upgrade_ground_weapons": (
+            has_forge and ground_tech_ready,
+            "needs forge; levels 2-3 need twilight council",
+        ),
+        "upgrade_air_weapons": (
+            poc_cybcore and air_tech_ready,
+            "needs poc_cybcore; levels 2-3 need fleet beacon",
+        ),
+        "upgrade_shields": (
+            has_forge and shields_tech_ready,
+            "needs forge; levels 2-3 need twilight council",
+        ),
         "train_adept": (poc_gateway_type and poc_cybcore, "needs gateway/warpgate and poc_cybcore"),
         "train_phoenix": (poc_stargate, "needs poc_stargate"),
         "train_colossus": (poc_robo and has_robobay, "needs poc_robo and has_robobay"),

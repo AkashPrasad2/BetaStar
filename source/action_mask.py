@@ -94,6 +94,7 @@ IDX_SHIELDS_LVL = obs_spec.IDX_SHIELDS_LVL
 IDX_AIR_WEAPONS_LVL = obs_spec.IDX_AIR_WEAPONS_LVL
 
 EPS = 0.01
+LEVEL_ONE_COMMITTED = (1.0 / obs_spec.UPGRADE_NORM) - EPS
 
 
 def _apply_supply_gate(mask: torch.Tensor, obs: torch.Tensor,
@@ -242,17 +243,23 @@ def build_legal_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 26: research_warp_gate : needs Cybernetics Core
     mask[:, _A["research_warp_gate"]] = has_cybcore
 
-    # Action 27: upgrade_ground_weapons : needs Forge, level < 3
+    # Level 1 needs only a Forge. Levels 2-3 also need Twilight Council.
+    ground_level = obs[:, IDX_GROUND_WEAPONS_LVL]
     mask[:, _A["upgrade_ground_weapons"]] = has_forge & (
-        obs[:, IDX_GROUND_WEAPONS_LVL] < (1.0 - EPS))
+        ground_level < (1.0 - EPS)) & (
+        (ground_level < LEVEL_ONE_COMMITTED) | has_twilight)
 
-    # Action 28: upgrade_air_weapons : needs Cybernetics Core, level < 3
+    # Level 1 needs only a Cybernetics Core. Levels 2-3 need Fleet Beacon.
+    air_level = obs[:, IDX_AIR_WEAPONS_LVL]
     mask[:, _A["upgrade_air_weapons"]] = has_cybcore & (
-        obs[:, IDX_AIR_WEAPONS_LVL] < (1.0 - EPS))
+        air_level < (1.0 - EPS)) & (
+        (air_level < LEVEL_ONE_COMMITTED) | has_fleet)
 
-    # Action 29: upgrade_shields : needs Forge, level < 3
+    # Level 1 needs only a Forge. Levels 2-3 also need Twilight Council.
+    shields_level = obs[:, IDX_SHIELDS_LVL]
     mask[:, _A["upgrade_shields"]] = has_forge & (
-        obs[:, IDX_SHIELDS_LVL] < (1.0 - EPS))
+        shields_level < (1.0 - EPS)) & (
+        (shields_level < LEVEL_ONE_COMMITTED) | has_twilight)
 
     # Action 31: train_adept : needs idle Gateway + Cybernetics Core
     mask[:, _A["train_adept"]] = has_idle_gw_wg & has_cybcore
@@ -329,6 +336,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     pend_twilight = obs[:, IDX_PEND_TWILIGHTCOUNCIL] > EPS
     pend_temparch = obs[:, IDX_PEND_TEMPLARARCHIVE] > EPS
     pend_forge = obs[:, IDX_PEND_FORGE] > EPS
+    pend_fleet = obs[:, IDX_PEND_FLEETBEACON] > EPS
 
     # --- Pending-or-complete: player has committed to building this ---
     poc_pylon = has_pylon | pend_pylon
@@ -340,6 +348,7 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     poc_twilight = has_twilight | pend_twilight
     poc_temparch = has_temparch | pend_temparch
     poc_forge = has_forge | pend_forge
+    poc_fleet = has_fleet | pend_fleet
 
     # Gateway-type production: a Warpgate is a morphed Gateway and gates the same
     # units/tech. After Warp Gate research pros morph every Gateway, so the plain
@@ -437,14 +446,20 @@ def build_training_mask(obs: torch.Tensor) -> torch.Tensor:
     # Action 26: research_warp_gate : cybcore poc
     mask[:, _A["research_warp_gate"]] = poc_cybcore
 
-    # Action 27: upgrade_ground_weapons : forge poc (no level cap in training to handle lag)
-    mask[:, _A["upgrade_ground_weapons"]] = poc_forge
+    # Higher Forge levels require a Twilight Council. Pending counts as
+    # committed here because this is the relaxed replay-training mask.
+    ground_level = obs[:, IDX_GROUND_WEAPONS_LVL]
+    mask[:, _A["upgrade_ground_weapons"]] = poc_forge & (
+        (ground_level < LEVEL_ONE_COMMITTED) | poc_twilight)
 
-    # Action 28: upgrade_air_weapons : cybcore poc (no level cap in training)
-    mask[:, _A["upgrade_air_weapons"]] = poc_cybcore
+    # Higher air-weapon levels require a Fleet Beacon.
+    air_level = obs[:, IDX_AIR_WEAPONS_LVL]
+    mask[:, _A["upgrade_air_weapons"]] = poc_cybcore & (
+        (air_level < LEVEL_ONE_COMMITTED) | poc_fleet)
 
-    # Action 29: upgrade_shields : forge poc (no level cap in training)
-    mask[:, _A["upgrade_shields"]] = poc_forge
+    shields_level = obs[:, IDX_SHIELDS_LVL]
+    mask[:, _A["upgrade_shields"]] = poc_forge & (
+        (shields_level < LEVEL_ONE_COMMITTED) | poc_twilight)
 
     # Action 31: train_adept : gateway + cybcore both poc (no idle check)
     mask[:, _A["train_adept"]] = poc_gateway_type & poc_cybcore

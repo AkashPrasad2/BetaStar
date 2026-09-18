@@ -6,21 +6,15 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
 from gameplay.helpers import build_structure, warp_in_unit, ActionResult
 
-# Action names are defined once in obs_spec (index == action id) and imported
-# here so execution dispatch, the parser, and the analysis scripts can never
-# disagree about which id means what.
+# Action names are defined once in obs_spec and imported
 from obs_spec import ACTION_NAMES as ACTIONS
-
-
-# (The army unit list lives in gameplay.helpers.ARMY_TYPES.
-# The copy that used to be here existed only for the removed attack action.)
 
 
 def _train(bot: BotAI, unit: UnitTypeId, building: UnitTypeId,
            requires: UnitTypeId | None = None) -> ActionResult:
     """
     Train `unit` from an idle `building`, optionally gated on `requires` being
-    complete. Returns why it did or did not happen.
+    complete. Returns why it failed in error case.
     """
     if requires is not None and not bot.structures(requires).ready:
         return ActionResult.NO_PREREQ
@@ -35,13 +29,7 @@ def _train(bot: BotAI, unit: UnitTypeId, building: UnitTypeId,
 
 def _train_probe(bot: BotAI) -> ActionResult:
     """
-    Train a probe, preferring an IDLE nexus.
-
-    This used to be `bot.townhalls.ready.first.train(...)`, which always targeted
-    the same nexus. Its production queue filled up (max 5) and further orders were
-    rejected outright -- 24 silent no-ops across the logged games -- while the
-    other nexuses sat idle. Preferring an idle townhall spreads production and
-    removes the rejection.
+    Train probe preferring an IDLE nexus.
     """
     if not bot.can_afford(UnitTypeId.PROBE):
         return ActionResult.UNAFFORDABLE
@@ -57,10 +45,13 @@ def _research(
     building: UnitTypeId,
     ability: AbilityId,
     upgrade: UpgradeId,
+    requires: UnitTypeId | None = None,
 ) -> ActionResult:
-    """Issue one research command and report why it could not be issued."""
+    """Issue one research command (for things like charge, warp gate, etc.)"""
     structures = bot.structures(building).ready
     if not structures:
+        return ActionResult.NO_PREREQ
+    if requires is not None and not bot.structures(requires).ready:
         return ActionResult.NO_PREREQ
     if upgrade in bot.state.upgrades or bot.already_pending_upgrade(upgrade) > 0:
         return ActionResult.SUPPRESSED
@@ -75,18 +66,18 @@ def _research(
 def _research_next_level(
     bot: BotAI,
     building: UnitTypeId,
-    levels: tuple[tuple[UpgradeId, AbilityId], ...],
+    levels: tuple[tuple[UpgradeId, AbilityId, UnitTypeId | None], ...],
 ) -> ActionResult:
-    """Research the first incomplete level in an ordered upgrade chain."""
-    for upgrade, ability in levels:
+    """Research the first incomplete level in an ordered upgrade chain (ground weapons etc.)"""
+    for upgrade, ability, requires in levels:
         if upgrade in bot.state.upgrades:
             continue
-        return _research(bot, building, ability, upgrade)
+        return _research(bot, building, ability, upgrade, requires)
     return ActionResult.SUPPRESSED
 
 
 async def execute_action(action_id: int, bot: BotAI):
-    """Execute an action. All branches are fully guarded — no .first on empty collections."""
+    """Execute an action"""
     action_name = ACTIONS[action_id]
 
     if action_name == "do_nothing":
@@ -174,31 +165,38 @@ async def execute_action(action_id: int, bot: BotAI):
     elif action_name == "upgrade_ground_weapons":
         return _research_next_level(bot, UnitTypeId.FORGE, (
             (UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
-             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1),
+             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1, None),
             (UpgradeId.PROTOSSGROUNDWEAPONSLEVEL2,
-             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL2),
+             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL2,
+             UnitTypeId.TWILIGHTCOUNCIL),
             (UpgradeId.PROTOSSGROUNDWEAPONSLEVEL3,
-             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL3),
+             AbilityId.FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL3,
+             UnitTypeId.TWILIGHTCOUNCIL),
         ))
 
     elif action_name == "upgrade_air_weapons":
         return _research_next_level(bot, UnitTypeId.CYBERNETICSCORE, (
             (UpgradeId.PROTOSSAIRWEAPONSLEVEL1,
-             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL1),
+             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL1,
+             None),
             (UpgradeId.PROTOSSAIRWEAPONSLEVEL2,
-             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL2),
+             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL2,
+             UnitTypeId.FLEETBEACON),
             (UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
-             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL3),
+             AbilityId.CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL3,
+             UnitTypeId.FLEETBEACON),
         ))
 
     elif action_name == "upgrade_shields":
         return _research_next_level(bot, UnitTypeId.FORGE, (
             (UpgradeId.PROTOSSSHIELDSLEVEL1,
-             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL1),
+             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL1, None),
             (UpgradeId.PROTOSSSHIELDSLEVEL2,
-             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL2),
+             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL2,
+             UnitTypeId.TWILIGHTCOUNCIL),
             (UpgradeId.PROTOSSSHIELDSLEVEL3,
-             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3),
+             AbilityId.FORGERESEARCH_PROTOSSSHIELDSLEVEL3,
+             UnitTypeId.TWILIGHTCOUNCIL),
         ))
 
     elif action_name == "train_adept":

@@ -1,7 +1,7 @@
 """
-observation_wrapper.py — live (inference-time) observation builder
-==================================================================
-Queries the live SC2 API for raw game state and hands it to
+Inference-timeobservation builder
+
+Queries live SC2 API for raw game state and hands it to
 obs_spec.build_obs_vector(), which is the same function the replay parser uses
 to build training observations. All layout/binning/normalization lives in
 obs_spec so the two paths cannot diverge.
@@ -10,13 +10,11 @@ obs_spec so the two paths cannot diverge.
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
-
-import obs_spec
 from obs_spec import (
     STRUCTURES, UNITS, PENDING_STRUCTURES, OBS_SIZE, build_obs_vector,
 )
 
-# Map the canonical names in obs_spec to burnysc2 type ids.
+# Map names in obs_spec to burnysc2 unit type ids.
 STRUCTURE_IDS = {
     "NEXUS":            UnitTypeId.NEXUS,
     "PYLON":            UnitTypeId.PYLON,
@@ -66,11 +64,6 @@ UPGRADE_CHAINS = {
         UpgradeId.PROTOSSAIRWEAPONSLEVEL3,
     ),
 }
-
-# Backwards-compatible aliases (older code imported these lists from here).
-PROTOSS_STRUCTURES = [STRUCTURE_IDS[n] for n in STRUCTURES]
-PROTOSS_UNITS = [UNIT_IDS[n] for n in UNITS]
-
 
 class ObservationWrapper:
     """Converts live game state into the canonical observation vector."""
