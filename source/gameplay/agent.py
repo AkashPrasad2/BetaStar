@@ -1,3 +1,4 @@
+from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 
@@ -22,23 +23,20 @@ import actions
 
 logger = logging.getLogger(__name__)
 
-from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR
 
 CHECKPOINT_PATH = str(BEST_IL_CHECKPOINT)
 DEVICE = "cpu"
 
-# Per-decision JSONL tracing is opt-in; normal runs keep concise summaries.
+# Per-decision JSON tracing is opt-in. Normal runs have concise summaries.
 ENABLE_DECISION_LOG = False
 LOG_DIR = str(DEFAULT_LOG_DIR)
 
-# Exact build-count targets for the short PPO opening curriculum. Evaluation
-# may enforce them only during the opening and then release them for full-game
-# production.
+# build-count targets for the PPO opening curriculum
 OPENING_STRUCTURE_LIMITS = {
     "PYLON": 1,
     "GATEWAY": 1,
     "ASSIMILATOR": 1,
-    "NEXUS": 2,  # starting Nexus plus the requested expansion
+    "NEXUS": 2,
     "CYBERNETICSCORE": 1,
 }
 
@@ -71,56 +69,42 @@ class ProtossBot(BotAI):
         self.opening_limits_until = opening_limits_until
         self.obs_wrapper = ObservationWrapper()
         # Evaluation loads from disk. RL supplies the optimizer-owned policy
-        # directly so every episode uses the same in-memory parameters.
+        # directly so every game uses the same in-memory parameters.
         self.model = (
             policy_model if policy_model is not None
             else load_model(checkpoint_path, device=device)
         )
         self.obs_history: list = []  # rolling window of observation vectors
 
-        # Baseline/RL episode measurements. These are observed on every SC2
-        # step (not just every 4-second policy decision), so milestone timing is
-        # as precise as the game-step interval permits.
+        # Baseline/RL episode measurements. These are observed on every SC2 step
+        # (not just every 4-second policy decision)
         self.milestone_times: dict[str, float] = {}
         self.final_game_time: float = 0.0
         self.final_game_result = None
 
         # Next game-time (seconds) at which to query the model. Scheduled on
-        # game time rather than by counting on_step iterations: the old
-        # `action_cooldown = 22` actually produced a 23-iteration period, which
-        # at a 4-frame game step is 4.107s against the parser's 4s training
-        # window -- 2.7% slow, accumulating over the game. Counting iterations
-        # also silently breaks if the game step changes.
+        # game time rather than by counting on_step iterations (it was off by a bit)
         self.next_decision_time: float = 0.0
 
-        # Army state machine
+        # troop management
         self.army_state = ArmyState.RALLY
         self.army_state_since: float = 0.0
         self.enemy_bases_cleared: set = set()
 
-        # Threat tracking. Protoss structure health never regenerates, so
-        # "is anything damaged" is a permanent condition and cannot be used to
-        # decide whether to keep defending. Instead we watch for hp/shield to
-        # DROP between steps, and for enemies near our structures.
         self.structure_hp_snapshot: dict = {}   # tag -> (hp+shield, position)
         self.last_damage_time: float = -1.0e9
         self.last_damage_pos = None
         self.threat_position = None
 
-        # Timing
         self.last_army_command_time: float = 0.0
         self.last_rally_time: float = 0.0
 
-        # Workers reserved for a build (tag -> game time the hold expires), so
-        # auto_saturate_assimilators and friends cannot steal a probe that is
-        # walking to a build site. See gameplay.helpers.reserve_worker.
+        # workers reserved for a build (mutex-like system)
         self.reserved_workers: dict = {}
 
-        # Production buildings that have had rally points set
-        self.rally_tags_set: set = set()
+        self.rally_tags_set: set = set()  # for production buildings
 
-        # High templar tag -> game time a merge was last commanded, so a
-        # rejected merge cannot become a per-step retry loop.
+        # High templar tag -> game time a merge was last commanded to avoid spam
         self.archon_merge_issued: dict = {}
 
         # Per-decision introspection (None when disabled)
@@ -133,7 +117,6 @@ class ProtossBot(BotAI):
             "pylon": (UnitTypeId.PYLON, 1),
             "gateway": (UnitTypeId.GATEWAY, 1),
             "assimilator": (UnitTypeId.ASSIMILATOR, 1),
-            # Two ready Nexuses means the expansion, not the starting base.
             "nexus": (UnitTypeId.NEXUS, 2),
             "cybernetics_core": (UnitTypeId.CYBERNETICSCORE, 1),
         }
@@ -145,7 +128,8 @@ class ProtossBot(BotAI):
     def episode_summary(self, game_result=None) -> dict:
         """Return JSON-serializable measurements for baseline/RL tooling."""
         result = game_result if game_result is not None else self.final_game_result
-        result_name = getattr(result, "name", str(result) if result is not None else None)
+        result_name = getattr(result, "name", str(
+            result) if result is not None else None)
         deadline = self.goal_deadline
         required = ("pylon", "gateway", "cybernetics_core")
         goal_met = all(
@@ -178,7 +162,8 @@ class ProtossBot(BotAI):
         opening_mask = self._opening_action_mask()
         if opening_mask is not None:
             predict_kwargs["legal_mask"] = opening_mask
-        selected = predict_action(self.model, self.obs_history, **predict_kwargs)
+        selected = predict_action(
+            self.model, self.obs_history, **predict_kwargs)
         if self.decision_log is not None:
             return selected
         return selected, {}
@@ -217,10 +202,7 @@ class ProtossBot(BotAI):
         await manage_army(self)
         await chrono_boost_production(self)
 
-        # Query the model on the training grid (every DECISION_INTERVAL_SECONDS
-        # of game time). on_step granularity is ~0.18s, so decisions land at the
-        # first step at or after each grid boundary: jitter under one iteration
-        # and, unlike a step counter, no accumulating drift.
+        # Query the model on the training grid (every DECISION_INTERVAL_SECONDS)
         if self.time < self.next_decision_time:
             return
 

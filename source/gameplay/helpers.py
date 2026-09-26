@@ -36,31 +36,24 @@ PRODUCTION_BUILDINGS = [
     UnitTypeId.ROBOTICSFACILITY,
 ]
 
-# trigger defense if any completed structure drops below this HP %
-# --- Threat detection -------------------------------------------------------
-# Protoss structure HEALTH never regenerates (only shields do). The old trigger
-# was `health_percentage < 0.85`, which is therefore a PERMANENT condition: one
-# scratch on one building and the bot defends for the rest of the game. Worse,
-# the ATTACK branch of _transition_state falls through to the same check, so the
-# bot also stopped ever attacking. Threat is now derived from things that
-# actually stop being true:
-#   * a structure LOST health/shields since the last step (recent damage), or
-#   * a visible enemy combat unit is near one of our structures.
+# trigger defense if:
+#   - a structure lost health/shields since the last step (recent damage), or
+#   - a visible enemy combat unit is near one of our structures.
+
 DEFEND_DAMAGE_MEMORY = 12.0   # seconds a damage event keeps us in DEFEND
 DEFEND_ENEMY_RADIUS = 25.0    # enemy within this of a structure = threat
 MIN_STATE_DWELL = 6.0         # min seconds in DEFEND/ATTACK before switching out
 DAMAGE_EPSILON = 1.0          # ignore sub-unit jitter in hp+shield readings
 
-ATTACK_SUPPLY_THRESHOLD = 70    # army supply needed to initiate an attack
+ATTACK_SUPPLY_THRESHOLD = 70
 ATTACK_TIME_CAP = 1680          # hard attack at 28 min regardless of supply
-# No retreat threshold: ATTACK is a one-way commitment (see _transition_state).
-RALLY_INTERVAL = 30             # seconds between passive rally commands
+
+RALLY_INTERVAL = 30
 # seconds between re-issuing army orders (avoid spam)
 ARMY_COMMAND_INTERVAL = 5
-# Bounds how often a merge can be re-commanded for the same templar. Defensive:
-# if the game ever rejects a merge, this caps the retry rate instead of letting
-# it fire on every on_step.
 ARCHON_MERGE_RETRY_SECONDS = 5.0
+
+# Use state machine to manage army
 
 
 class ArmyState(Enum):
@@ -70,44 +63,27 @@ class ArmyState(Enum):
 
 
 class ActionResult(Enum):
-    """
-    Why an execution attempt did or did not happen.
+    """Why an execution attempt did or did not happen."""
 
-    The execution layer used to return None from every path, so a decision that
-    silently failed was indistinguishable from one that worked -- 220 of 246
-    no-ops in the logged games were affordable, meaning something in here
-    dropped them without saying so. Returning a reason turns that into data.
-    """
-    ISSUED = "issued"                 # order actually sent to the game
-    SUPPRESSED = "suppressed"         # refused on purpose (MAX_CONCURRENT_BUILDS)
-    UNAFFORDABLE = "unaffordable"     # not enough minerals/gas
-    NO_PLACEMENT = "no_placement"     # find_placement found nowhere legal
-    NO_WORKER = "no_worker"           # no worker free to build
-    NO_PREREQ = "no_prereq"           # missing powered pylon / townhall / tech
-    NO_TARGET = "no_target"           # no expansion site or free geyser
-    NO_PRODUCTION = "no_production"   # no idle production building
-    NO_OP = "no_op"                   # intentional do_nothing action
-    NOT_LABELLED = "not_labelled"     # path not yet instrumented
+    ISSUED = "issued"               # order successfully sent to the game
+    SUPPRESSED = "suppressed"      # refused on purpose (MAX_CONCURRENT_BUILDS)
+    UNAFFORDABLE = "unaffordable"   # not enough minerals/gas
+    NO_PLACEMENT = "no_placement"   # find_placement found nowhere legal
+    NO_WORKER = "no_worker"         # no worker free to build
+    NO_PREREQ = "no_prereq"         # missing powered pylon / townhall / tech
+    NO_TARGET = "no_target"         # no expansion site or free geyser
+    NO_PRODUCTION = "no_production"  # no idle production building
+    NO_OP = "no_op"                 # intentional do_nothing action
+    NOT_LABELLED = "not_labelled"   # path not yet instrumented
 
 
-# ---------------------------------------------------------------------------
-# Worker reservation ("mutex" on a probe)
-# ---------------------------------------------------------------------------
-#
-# A probe dispatched to build is vulnerable for the whole walk to the site:
-# auto_saturate_assimilators runs on every on_step (~5.6x/second) and used to
-# grab `bot.workers.closest_to(assimilator)` with no filtering, which overrode
-# the build order. already_pending then dropped back to 0 and the decision was
-# logged as a no-op. Reserving the builder makes that impossible.
-#
-# The reservation expires on a timer so a probe that can never reach its site
-# (walled off, unreachable placement) is released instead of being leaked.
-
+# probe mutex: due to auto_saturate and other probe management code,
+# we lock a probe for a set amount of time so actions do not silently fail due to this probe being reassigned an action
 WORKER_RESERVATION_SECONDS = 20.0
 
 # Warp-in placement search around the chosen pylon.
-WARP_PLACEMENT_RADIUS = 6.0
-WARP_PLACEMENT_ATTEMPTS = 12
+WARP_PLACEMENT_RADIUS = 5.0
+WARP_PLACEMENT_ATTEMPTS = 20
 
 
 def _reservations(bot: BotAI) -> dict:
@@ -132,10 +108,7 @@ def release_worker(bot: BotAI, tag: int):
 
 def _worker_is_available(bot: BotAI, worker, reserved: dict) -> bool:
     """
-    A worker we may command. `is_idle or is_collecting` is the key test: a worker
-    that is mining or returning cargo is demonstrably mobile and not walled off,
-    and -- critically -- a worker that is walking to a build site or already
-    constructing is NEITHER, so this can never steal a builder.
+    A worker we may command. `is_idle or is_collecting` is the key test
     """
     if worker.tag in reserved:
         return False
@@ -249,24 +222,11 @@ def _current_threat(bot: BotAI) -> tuple[bool, object | None]:
 
 
 # ---------------------------------------------------------------------------
-# Build helper
+# Build helpers
 # ---------------------------------------------------------------------------
 
 # Max number of each structure type allowed to be in flight (under construction
-# OR with a worker walking to the site) at any one time.
-#
-# Why this is needed: the model re-decides every few seconds, but the pending-
-# structure feature it sees comes from `not_ready.amount`, which only counts
-# structures that physically EXIST and are being built. Between issuing the build
-# order and the worker arriving at the site, nothing exists yet -- so the
-# observation is identical to "nothing is happening" and the policy samples the
-# same build again. And again. The model also gets no action history in its
-# input, so it cannot know it just ordered one. Result: a stream of pylons until
-# the first one finally breaks ground, then the same for gateways, etc.
-#
-# already_pending() counts worker-en-route builds too, so it is the correct
-# signal for suppressing duplicates at the execution layer. Caps above 1 are
-# allowed where pros genuinely build in parallel.
+# or with a worker walking to the site) at any one time.
 MAX_CONCURRENT_BUILDS = {
     UnitTypeId.PYLON:       2,
     UnitTypeId.GATEWAY:     6,
@@ -278,20 +238,13 @@ DEFAULT_MAX_CONCURRENT_BUILDS = 1
 GEYSER_SEARCH_RADIUS = 15
 
 
-# Placement search. Anchoring every building on the starting nexus boxed the bot
-# in: once the main base filled up, find_placement returned None and every build
-# silently failed. Pylons are spread out by design (they must be, to spread
-# power), so they are far better anchors -- a small radius around each of several
-# pylons covers much more legal ground than one big radius around the nexus, and
-# costs fewer placement queries.
+# Placement search
 PLACEMENT_STEP = 2
 PLACEMENT_RADIUS = 12          # search radius per anchor
 MAX_PLACEMENT_ANCHORS = 5      # bounds placement queries per decision
 PYLON_PLACEMENT_STEP = 8
 
-# Structures that belong on the OUTSIDE of the base facing the enemy, rather than
-# tucked in behind the tech. A shield battery only does its job where the fighting
-# happens. Add UnitTypeId.PHOTONCANNON here to place cannons the same way.
+# Structures that belong on the outside of the base.
 FORWARD_STRUCTURES = {UnitTypeId.SHIELDBATTERY}
 FORWARD_NUDGE = 3.0            # units toward the enemy from the anchor pylon
 
@@ -317,14 +270,7 @@ def _enemy_anchor(bot: BotAI):
 
 def _powered_anchors(bot: BotAI, forward: bool = False) -> list:
     """
-    Anchors for buildings needing power: every ready pylon, then townhalls.
-
-    Normally ordered nearest-our-start first, so tech buildings cluster safely in
-    the main. With `forward=True` the ordering flips to nearest-the-enemy and each
-    anchor is nudged toward the enemy, so defensive structures end up on the
-    OUTSIDE of the base where they can actually cover a fight instead of being
-    walled in behind the tech. The nudge stays inside pylon power radius (6.5),
-    and the game's placement query rejects unpowered spots anyway.
+    Anchors for buildings needing power from a pylon
     """
     if forward:
         target = _enemy_anchor(bot)
@@ -346,10 +292,7 @@ def _powered_anchors(bot: BotAI, forward: bool = False) -> list:
 
 async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
     """
-    Try to build `building`, returning an ActionResult describing what happened.
-
-    Every failure path used to `return` silently, which is why 220 of 246 logged
-    no-ops were affordable but unexplained. Now each one names itself.
+    Try to build, returning an ActionResult describing what happened.
     """
     cap = MAX_CONCURRENT_BUILDS.get(building, DEFAULT_MAX_CONCURRENT_BUILDS)
     if bot.already_pending(building) >= cap:
@@ -363,7 +306,7 @@ async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
 
     starting_nexus = bot.townhalls.closest_to(bot.start_location)
 
-    # --- Assimilator: any free geyser at any base ------------------------
+    # Assimilator: any free geyser at any base
     if building == UnitTypeId.ASSIMILATOR:
         for townhall in sorted(bot.townhalls,
                                key=lambda th: th.distance_to(bot.start_location)):
@@ -380,7 +323,7 @@ async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
                 return ActionResult.ISSUED
         return ActionResult.NO_TARGET
 
-    # --- Nexus: expand ---------------------------------------------------
+    # Nexus expo
     if building == UnitTypeId.NEXUS:
         location = await bot.get_next_expansion()
         if not location:
@@ -392,7 +335,7 @@ async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
         reserve_worker(bot, worker.tag)
         return ActionResult.ISSUED
 
-    # --- Pylon: spread power across our bases ----------------------------
+    # Pylon: spread out for power coverage
     if building == UnitTypeId.PYLON:
         if not bot.structures(UnitTypeId.PYLON):
             direction = (bot.game_info.map_center
@@ -415,7 +358,7 @@ async def build_structure(bot: BotAI, building: UnitTypeId) -> ActionResult:
         reserve_worker(bot, worker.tag)
         return ActionResult.ISSUED
 
-    # --- Everything else needs pylon power -------------------------------
+    # Everything else (pylon needed for power)
     if not bot.structures(UnitTypeId.PYLON).ready:
         return ActionResult.NO_PREREQ
 
@@ -442,16 +385,7 @@ async def auto_saturate_assimilators(bot: BotAI):
     """
     Assign workers to under-staffed assimilators.
 
-    This was the main builder thief. It used to be:
-
-        probe = bot.workers.closest_to(assimilator)
-        probe.gather(assimilator)
-
-    with no filtering, running every on_step. The nearest worker to a geyser is
-    very often the probe that was just dispatched to build something nearby, so
-    its build order got replaced within ~0.18s and the build silently vanished.
-
-    Now it only considers workers that are idle or collecting (never a builder),
+    Only considers workers that are idle or collecting (never a builder),
     skips reserved workers, and skips workers already assigned to that geyser so
     it stops re-issuing the same order several times a second.
     """
@@ -566,10 +500,7 @@ def _transition_state(bot: BotAI):
         return
 
     if bot.army_state == ArmyState.ATTACK:
-        # ATTACK is absorbing: once committed we push until everything is dead
-        # or the army is. No retreat, and base threats do NOT pull the army
-        # home -- turning around mid-push loses the army for nothing and was
-        # what made the bot look like it was retreating.
+        # Once commited to attack, do not turn back. Either everything dies or we win
         return
 
     # A live threat interrupts rallying.
@@ -681,20 +612,6 @@ def _issue_attack(bot: BotAI, army, target_pos: Point2, reason: str):
 async def auto_merge_archons(bot: BotAI):
     """
     Merge pairs of High Templars into Archons.
-
-    MORPH_ARCHON is a NO-TARGET ability issued to a *group* of templars: the raw
-    API expects a single action with ability_id=MORPH_ARCHON carrying the tags of
-    both units. The previous version passed the second templar as a target
-    (`ht1(MORPH_ARCHON, ht2)`), which the game rejects.
-
-    That rejection was self-sustaining: because the command never landed, no
-    templar ever acquired a MORPH_ARCHON order, so the "already merging" guard
-    never tripped and this ran again on every on_step -- console spam while the
-    templars stood still.
-
-    burnysc2 combines UnitCommands sharing (ability, target, queue) into one raw
-    action, so issuing the no-target ability to both templars in the same step
-    produces exactly the action the game expects.
     """
     hts = bot.units(UnitTypeId.HIGHTEMPLAR).ready
     if hts.amount < 2:
@@ -723,12 +640,12 @@ async def auto_merge_archons(bot: BotAI):
     ht1, ht2 = candidates[0], candidates[1]
 
     # Confirm the game actually offers the merge right now. Without this, any
-    # future rejection would silently become a retry loop again.
+    # future rejection would silently fail
     abilities = await bot.get_available_abilities([ht1, ht2])
     if not all(AbilityId.MORPH_ARCHON in available for available in abilities):
         return
 
-    # No target — issued to both templars, combined into one action.
+    # No target: issued to both templars, combined into one action.
     ht1(AbilityId.MORPH_ARCHON)
     ht2(AbilityId.MORPH_ARCHON)
 
@@ -747,9 +664,7 @@ async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId,
     """
     Warp a unit in near a pylon. Returns why it did or did not happen.
 
-    NO_PRODUCTION here means every warpgate is on warp cooldown -- the single
-    biggest cause of warp-in no-ops, and invisible to the model because the
-    observation has no cooldown feature.
+    NO_PRODUCTION here means every warpgate is on warp cooldown
     """
     if requires is not None and not bot.structures(requires).ready:
         return ActionResult.NO_PREREQ
@@ -788,7 +703,7 @@ async def warp_in_unit(bot: BotAI, unit_type: UnitTypeId,
             ready_gate.warp_in(unit_type, placement)
             return ActionResult.ISSUED
 
-    # Last resort: warp onto the pylon itself.
+    # Last resort: try warping onto the pylon itself
     ready_gate.warp_in(unit_type, pylon.position)
     return ActionResult.ISSUED
 
@@ -801,12 +716,6 @@ async def chrono_boost_production(bot: BotAI):
     """
     Automatically chrono boost a production structure if it is currently building
     something. Priority order: robo facility, then stargate, then warpgate.
-
-    Note: has_buff() takes a BuffId, NOT an AbilityId. Passing an AbilityId
-    raises inside burnysc2 (it asserts on the type), which crashed the game the
-    first time any production building was busy. Because Robotics Facility is
-    checked first, the crash typically surfaced at the Stargate in games with no
-    robo. The cast ability is an AbilityId; only the buff lookup takes a BuffId.
     """
     CHRONO_BUFF = BuffId.CHRONOBOOSTENERGYCOST
     CHRONO_ABILITY = AbilityId.EFFECT_CHRONOBOOSTENERGYCOST

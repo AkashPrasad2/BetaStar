@@ -1,39 +1,27 @@
 """
-replay_parser.py — Fixed-Grid Sequence Dataset Builder
-=======================================================
-Builds (observation, action) sequences from human replays on a fixed time grid.
+Parses replays and constructs training data
 
-State reconstruction (rewritten)
---------------------------------
-State used to be reconstructed by incrementing/decrementing counters as command
-and completion events streamed by. That leaked badly: a divergence audit over 40
-replays found the parser reporting ~32 structures under construction by minute 28
-when the true figure was ~1, error growing monotonically all game. Causes were
-build commands that never produce a building (spam clicks, replaced orders),
-missing cancel handling, and structures absent from the command maps entirely.
+Builds (observation, action) sequences from professional replays on a fixed time grid.
 
-State now comes from sc2reader's per-object lifetimes, which sc2reader has
+State reconstruction comes from sc2reader's per-object lifetimes, which sc2reader has
 already resolved:
-
     under construction : started_at  <= t < finished_at
     completed & alive  : finished_at <= t < died_at
     type as of time t  : latest type_history entry <= t
 
 This is exact, cannot drift, needs no build-time constants, and handles cancels
-for free (a cancelled building simply never gets a finished_at). Using
-type_history also fixes Gateway/Warpgate: sc2reader's unit.name returns the
-unit's FINAL type, so a Gateway that later morphs reported as "WarpGate" for its
-whole life, leaving the completed-Gateway feature near zero across the corpus.
+for free (a cancelled building simply never gets a finished_at)
 
-Pending UNITS cannot come from lifetimes — a queued unit has no object until it
-pops. They are instead derived by FIFO-matching each production command to the
+Pending UNITS cannot come from lifetime (object does not exist unti it is born)
+They are instead derived by FIFO-matching each production command to the
 next matching birth, so unmatched commands (cancelled, or the producing building
-died) are discarded rather than leaking upward.
+died) are discarded
 
 Observations are emitted through obs_spec.build_obs_vector(), the same function
 the live bot uses at inference.
 """
 
+from paths import DEFAULT_DATASET, DEFAULT_LOG_DIR, DEFAULT_REPLAY_DIR
 from collections import defaultdict, Counter
 import os
 import time
@@ -72,15 +60,11 @@ from telemetry.console import configure_logging
 # Shared with the live bot via obs_spec so the two cadences cannot drift apart.
 GRID_INTERVAL_SECONDS = DECISION_INTERVAL_SECONDS
 
-# A production command is matched to a birth at most this far in the future.
-# Beyond it we assume the order never delivered.
+# Assume production was cancelled if longer than this
 MAX_PRODUCTION_LAG_SECONDS = 180.0
 
-MIN_REPLAY_BUILD = 73286   # 4.0.0 — older replays are unreadable here
+MIN_REPLAY_BUILD = 73286   # 4.0.0; older replays are unreadable
 
-from paths import DEFAULT_DATASET, DEFAULT_LOG_DIR, DEFAULT_REPLAY_DIR
-
-# Structured parser diagnostics are kept outside the source tree.
 LOG_DIR = str(DEFAULT_LOG_DIR)
 
 # ---------------------------------------------------------------------------
@@ -119,16 +103,7 @@ UNIT_NAME_MAP = {
     "Colossus":    "COLOSSUS",
 }
 
-# Supply cost of every Protoss unit, keyed by sc2reader name.
-#
-# This deliberately covers units that are NOT in UNIT_NAME_MAP. The feature
-# vocabulary only decides which unit COUNTS become observation features; supply
-# is consumed by everything. Pros build Observers, Sentries, Warp Prisms and
-# Oracles constantly, so restricting the sum to the 11 tracked types would
-# undercount supply badly and make the derived value useless.
-#
-# Structures cost no supply in Protoss, so anything absent from this table
-# contributes 0 and needs no entry.
+# Supply cost of every Protoss unit, keyed by sc2reader name
 PROTOSS_SUPPLY_COST = {
     "Probe":            1,
     "Zealot":           2,
@@ -151,8 +126,7 @@ PROTOSS_SUPPLY_COST = {
     "Tempest":          5,
     "Carrier":          6,
     "Mothership":       8,
-    "MothershipCore":   2,      # pre-LotV replays
-    # Interceptors and AdeptPhaseShift are free; listed for the reader.
+    "MothershipCore":   2,
     "Interceptor":      0,
     "AdeptPhaseShift":  0,
 }
@@ -228,6 +202,7 @@ def is_command_event(event) -> bool:
     three real command event variants imported above.
     """
     return type(event) in COMMAND_EVENTS
+
 
 _EPS = 0.01
 
@@ -315,18 +290,18 @@ def _action_legal_numpy(obs: list[float], action_id: int) -> tuple[bool, str]:
         "build_pylon": (True, ""),
         "build_gateway": (poc_pylon, "needs poc_pylon"),
         "build_cyberneticscore": (poc_gateway_type and under_cybcore_cap,
-             "needs gateway/warpgate and under_cybcore_cap"),
+                                  "needs gateway/warpgate and under_cybcore_cap"),
         "build_assimilator": (has_nexus, "needs nexus"),
         "build_nexus": (True, ""),
         "build_forge": (poc_pylon, "needs poc_pylon"),
         "build_stargate": (poc_cybcore, "needs poc_cybcore"),
         "build_robotics_facility": (poc_cybcore, "needs poc_cybcore"),
         "build_twilight_council": (poc_cybcore and not has_twilight,
-             "needs poc_cybcore and no_twilight"),
+                                   "needs poc_cybcore and no_twilight"),
         "build_photon_cannon": (has_forge, "needs forge"),
         "build_fleet_beacon": (poc_stargate and not has_fleet, "needs poc_stargate and no_fleet"),
         "build_templar_archive": (poc_twilight and not has_temparch,
-             "needs poc_twilight and no_temparch"),
+                                  "needs poc_twilight and no_temparch"),
         "build_robotics_bay": (poc_robo and not has_robobay, "needs poc_robo and no_robobay"),
         "build_shield_battery": (poc_cybcore, "needs poc_cybcore"),
         "train_zealot": (poc_gateway_type, "needs gateway or warpgate"),
@@ -432,7 +407,8 @@ class WindowedState:
         # the training value frame-accurate and kills that train/inference skew.
         self._supply_deltas: dict[int, float] = defaultdict(float)
 
-        self._resource_samples: list[tuple[float, float, float, float, float]] = []
+        self._resource_samples: list[tuple[float,
+                                           float, float, float, float]] = []
         self._upgrade_events: list[tuple[float, str, int]] = []
         self._production_commands: list[tuple[float, str]] = []
         self._births: dict[str, list[float]] = defaultdict(list)
@@ -565,7 +541,8 @@ class WindowedState:
             cost = PROTOSS_SUPPLY_COST.get(first_name, 0)
             if cost:
                 # Starting probes exist from frame 0 with no started_at.
-                supply_from = started if started is not None else (finished or 0)
+                supply_from = started if started is not None else (
+                    finished or 0)
                 self._emit_supply(cost, self._win(supply_from),
                                   self._win(died) if died is not None else None)
 
@@ -799,7 +776,8 @@ class ReplayParser:
             "UpgradeAirWeapons3": ACTION_ID["upgrade_air_weapons"],
             "UpgradeShields1": ACTION_ID["upgrade_shields"],
             "UpgradeShields2": ACTION_ID["upgrade_shields"],
-            "UpgradesShields3": ACTION_ID["upgrade_shields"],   # sc2reader typo variant
+            # sc2reader typo variant
+            "UpgradesShields3": ACTION_ID["upgrade_shields"],
             "UpgradeShields3": ACTION_ID["upgrade_shields"],
             "TrainAdept": ACTION_ID["train_adept"],
             "TrainPhoenix": ACTION_ID["train_phoenix"],
@@ -1049,10 +1027,12 @@ class ReplayParser:
         n_idle = int((all_actions == 0).sum())
         pct_idle = 100.0 * n_idle / len(all_actions)
 
-        print(f"\nDone. {len(sequences)} sequences | {total_steps} total windows")
+        print(
+            f"\nDone. {len(sequences)} sequences | {total_steps} total windows")
         print(f"Sequence lengths: min={min(lengths)}, max={max(lengths)}, "
               f"mean={np.mean(lengths):.0f}")
-        print(f"do_nothing: {n_idle}/{len(all_actions)} = {pct_idle:.1f}% of rows")
+        print(
+            f"do_nothing: {n_idle}/{len(all_actions)} = {pct_idle:.1f}% of rows")
         print(f"Skipped: {skipped}  |  Failed: {failed}")
         if bot_replays:
             print(f"Bot replays skipped: {bot_replays}")
