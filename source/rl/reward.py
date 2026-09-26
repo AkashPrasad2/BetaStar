@@ -24,7 +24,7 @@ class MilestoneReward:
 
 @dataclass(frozen=True)
 class OpeningRewardConfig:
-    """Reward configuration for a finite opening-build episode."""
+    """Reward configuration for a finite opening-build game."""
 
     milestones: tuple[MilestoneReward, ...]
     success_bonus: float = 3.0

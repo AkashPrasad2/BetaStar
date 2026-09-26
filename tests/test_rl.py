@@ -28,7 +28,7 @@ from rl.reward import (  # noqa: E402
     default_opening_reward,
     timing_multiplier,
 )
-from rl.eval import summarize_episodes  # noqa: E402
+from rl.eval import summarize_games  # noqa: E402
 
 
 class RewardTests(unittest.TestCase):
@@ -296,8 +296,8 @@ class PPOTests(unittest.TestCase):
 
 class EvaluatorTests(unittest.TestCase):
     def test_summary_uses_required_phase_and_individual_deadlines(self):
-        episode = {
-            "episode_reward": 0.6,
+        game = {
+            "total_reward": 0.6,
             "reward_goal_met": False,
             "opening_started_times": {
                 "pylon": 24.0,
@@ -314,8 +314,8 @@ class EvaluatorTests(unittest.TestCase):
             },
         }
 
-        summary = summarize_episodes(
-            [episode], default_opening_reward()
+        summary = summarize_games(
+            [game], default_opening_reward()
         )
 
         self.assertEqual(summary["targets"]["nexus"]["on_time"], 1)

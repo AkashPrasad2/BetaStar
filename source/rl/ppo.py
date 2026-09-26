@@ -150,7 +150,7 @@ def frozen_policy_copy(actor_critic: ActorCritic) -> ProtossTransformerModel:
 def compute_gae(
     rollout: list[RolloutStep], gamma: float, gae_lambda: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Propagate delayed rewards backward through one episode."""
+    """Propagate delayed rewards backward through one game rollout."""
     advantages = np.zeros(len(rollout), dtype=np.float32)
     next_advantage = 0.0
     next_value = 0.0

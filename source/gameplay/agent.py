@@ -76,7 +76,7 @@ class ProtossBot(BotAI):
         )
         self.obs_history: list = []  # rolling window of observation vectors
 
-        # Baseline/RL episode measurements. These are observed on every SC2 step
+        # Baseline/RL game measurements. These are observed on every SC2 step
         # (not just every 4-second policy decision)
         self.milestone_times: dict[str, float] = {}
         self.final_game_time: float = 0.0
@@ -125,7 +125,7 @@ class ProtossBot(BotAI):
                     and self.structures(unit_type).ready.amount >= target_count):
                 self.milestone_times[name] = float(self.time)
 
-    def episode_summary(self, game_result=None) -> dict:
+    def game_summary(self, game_result=None) -> dict:
         """Return JSON-serializable measurements for baseline/RL tooling."""
         result = game_result if game_result is not None else self.final_game_result
         result_name = getattr(result, "name", str(
@@ -187,7 +187,7 @@ class ProtossBot(BotAI):
     def _after_action_execution(self, action_id: int, result) -> None:
         """Extension hook used by rollout collectors after execution."""
 
-    def _on_policy_episode_end(self, game_result) -> None:
+    def _on_policy_game_end(self, game_result) -> None:
         """Extension hook used to settle the final rollout transition."""
 
     async def on_step(self, iteration: int):
@@ -248,9 +248,9 @@ class ProtossBot(BotAI):
         self.final_game_result = game_result
         self.final_game_time = max(self.final_game_time, float(self.time))
         self._update_milestones()
-        self._on_policy_episode_end(game_result)
+        self._on_policy_game_end(game_result)
         if self.decision_log is not None:
             self.decision_log.finish(
                 self, game_result,
-                episode_summary=self.episode_summary(game_result),
+                game_summary=self.game_summary(game_result),
             )

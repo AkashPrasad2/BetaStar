@@ -20,7 +20,7 @@ if str(SOURCE_DIR) not in sys.path:
 
 import torch
 
-from episode import DIFFICULTIES, EpisodeConfig, run_episode
+from game_runner import DIFFICULTIES, play_game
 from gameplay.agent import OPENING_STRUCTURE_LIMITS
 from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR, LATEST_PPO_CHECKPOINT
 from rl.rollout import PPOBot
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         description="Fine-tune the IL checkpoint on a short opening goal."
     )
     parser.add_argument("--updates", type=int, default=10)
-    parser.add_argument("--episodes-per-update", type=int, default=8)
+    parser.add_argument("--games-per-update", type=int, default=8)
     parser.add_argument("--time-limit", type=int, default=200)
     parser.add_argument(
         "--difficulty", choices=DIFFICULTIES, default="easy"
@@ -117,7 +117,7 @@ def parse_args() -> argparse.Namespace:
 
     positive_ints = {
         "--updates": args.updates,
-        "--episodes-per-update": args.episodes_per_update,
+        "--games-per-update": args.games_per_update,
         "--time-limit": args.time_limit,
         "--ppo-epochs": args.ppo_epochs,
         "--minibatch-size": args.minibatch_size,
@@ -360,7 +360,7 @@ def main() -> None:
                 "ppo_config": asdict(ppo_config),
                 "reward_config": reward_config.to_dict(),
                 "difficulty": args.difficulty,
-                "episodes_per_update": args.episodes_per_update,
+                "games_per_update": args.games_per_update,
                 "opening_structure_limits": OPENING_STRUCTURE_LIMITS,
                 "reward_reset_on_resume": reward_changed,
                 "source_il_checkpoint": str(
@@ -375,41 +375,31 @@ def main() -> None:
             rollouts = []
             summaries = []
             print(f"\nPPO UPDATE {update}/{final_update}")
-            for episode_index in range(args.episodes_per_update):
+            for game_index in range(args.games_per_update):
                 seed = args.seed + (
-                    (update - 1) * args.episodes_per_update + episode_index
+                    (update - 1) * args.games_per_update + game_index
                 )
-                config = EpisodeConfig(
-                    seed=seed,
-                    difficulty=DIFFICULTIES[args.difficulty],
-                    time_limit=args.time_limit,
-                    goal_deadline=float(args.time_limit),
-                    checkpoint_path=source_il_checkpoint,
+                agent = PPOBot(
+                    actor_critic,
+                    reward_config,
                     device=device,
                     temperature=args.temperature,
                     enable_decision_log=args.decision_log,
                     log_dir=args.log_dir,
+                    goal_deadline=float(args.time_limit),
                 )
-
-                def make_bot(_config: EpisodeConfig) -> PPOBot:
-                    return PPOBot(
-                        actor_critic,
-                        reward_config,
-                        device=device,
-                        temperature=args.temperature,
-                        enable_decision_log=args.decision_log,
-                        log_dir=args.log_dir,
-                        goal_deadline=float(args.time_limit),
-                    )
-
-                result = run_episode(config, bot_factory=make_bot)
-                rollouts.append(result.bot.rollout)
-                summary = result.summary
-                summary["seed"] = seed
+                completed_game = play_game(
+                    agent,
+                    seed=seed,
+                    difficulty=DIFFICULTIES[args.difficulty],
+                    time_limit=args.time_limit,
+                )
+                rollouts.append(agent.rollout)
+                summary = completed_game.summary
                 summaries.append(summary)
                 print(
-                    f"  episode {episode_index + 1}/{args.episodes_per_update} "
-                    f"seed={seed} reward={summary['episode_reward']:+.3f} "
+                    f"  game {game_index + 1}/{args.games_per_update} "
+                    f"seed={seed} reward={summary['total_reward']:+.3f} "
                     f"goal={'yes' if summary['reward_goal_met'] else 'no'} "
                     f"milestones={summary['milestone_times']}"
                 )
@@ -419,14 +409,14 @@ def main() -> None:
                 summary["reward_goal_met"] for summary in summaries
             ) / len(summaries)
             mean_reward = sum(
-                summary["episode_reward"] for summary in summaries
+                summary["total_reward"] for summary in summaries
             ) / len(summaries)
             record = {
                 "update": update,
                 "goal_rate": goal_rate,
-                "mean_episode_reward": mean_reward,
+                "mean_reward": mean_reward,
                 "metrics": metrics,
-                "episodes": summaries,
+                "games": summaries,
             }
             training_log.write(json.dumps(record) + "\n")
             training_log.flush()

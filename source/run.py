@@ -11,8 +11,8 @@ from pathlib import Path
 
 from sc2.data import Race, Result
 
-from episode import DIFFICULTIES, MAP_NAME, EpisodeConfig, run_episode
-from gameplay.agent import DEVICE, LOG_DIR
+from game_runner import DEFAULT_MAP, DIFFICULTIES, play_game
+from gameplay.agent import DEVICE, LOG_DIR, ProtossBot
 from paths import LATEST_PPO_CHECKPOINT
 from telemetry.console import configure_logging
 
@@ -70,27 +70,27 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def _median_milestone(episodes: list[dict], name: str) -> float | None:
+def _median_milestone(games: list[dict], name: str) -> float | None:
     values = [
-        episode["milestone_times"][name]
-        for episode in episodes
-        if name in episode["milestone_times"]
+        game["milestone_times"][name]
+        for game in games
+        if name in game["milestone_times"]
     ]
     return round(statistics.median(values), 2) if values else None
 
 
-def _write_report(args: argparse.Namespace, episodes: list[dict]) -> Path:
+def _write_report(args: argparse.Namespace, games: list[dict]) -> Path:
     log_dir = Path(args.log_dir) / "evaluation"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"evaluation_{stamp}.json"
 
-    wins = sum(e["result"] == Result.Victory.name for e in episodes)
-    cutoffs = sum(e["cutoff_reached"] for e in episodes)
-    goals = sum(e["goal_met"] for e in episodes)
+    wins = sum(game["result"] == Result.Victory.name for game in games)
+    cutoffs = sum(game["cutoff_reached"] for game in games)
+    goals = sum(game["goal_met"] for game in games)
     report = {
         "config": {
-            "map": MAP_NAME,
+            "map": DEFAULT_MAP,
             "opponent_race": Race.Zerg.name,
             "difficulty": args.difficulty,
             "games": args.games,
@@ -102,16 +102,16 @@ def _write_report(args: argparse.Namespace, episodes: list[dict]) -> Path:
         },
         "aggregate": {
             "wins": wins,
-            "win_rate": wins / len(episodes),
+            "win_rate": wins / len(games),
             "cutoffs": cutoffs,
             "goals_met": goals,
-            "goal_rate": goals / len(episodes),
+            "goal_rate": goals / len(games),
             "median_milestone_seconds": {
-                name: _median_milestone(episodes, name)
+                name: _median_milestone(games, name)
                 for name in ("pylon", "gateway", "cybernetics_core")
             },
         },
-        "episodes": episodes,
+        "games": games,
     }
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return path
@@ -121,14 +121,11 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.log_level)
     logger = logging.getLogger("betastar.run")
-    episodes = []
+    games = []
 
     for game_index in range(args.games):
         seed = args.seed + game_index
-        config = EpisodeConfig(
-            seed=seed,
-            difficulty=DIFFICULTIES[args.difficulty],
-            time_limit=args.time_limit,
+        agent = ProtossBot(
             goal_deadline=args.time_limit,
             checkpoint_path=args.checkpoint,
             device=args.device,
@@ -142,21 +139,27 @@ def main() -> None:
             game_index + 1, args.games, args.difficulty, seed,
             args.time_limit or "none",
         )
-        episode = run_episode(config).summary
-        episode["game_index"] = game_index
-        episodes.append(episode)
+        completed_game = play_game(
+            agent,
+            seed=seed,
+            difficulty=DIFFICULTIES[args.difficulty],
+            time_limit=args.time_limit,
+        )
+        summary = completed_game.summary
+        summary["game_index"] = game_index
+        games.append(summary)
         logger.info(
             "result=%s | goal_met=%s | milestones=%s",
-            episode["result"], episode["goal_met"],
-            episode["milestone_times"],
+            summary["result"], summary["goal_met"],
+            summary["milestone_times"],
         )
 
-    report_path = _write_report(args, episodes)
-    goals = sum(e["goal_met"] for e in episodes)
-    wins = sum(e["result"] == Result.Victory.name for e in episodes)
+    report_path = _write_report(args, games)
+    goals = sum(game["goal_met"] for game in games)
+    wins = sum(game["result"] == Result.Victory.name for game in games)
     logger.info(
         "evaluation complete | goals=%d/%d | wins=%d/%d | report=%s",
-        goals, len(episodes), wins, len(episodes), report_path,
+        goals, len(games), wins, len(games), report_path,
     )
 
 

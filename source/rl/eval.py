@@ -21,7 +21,7 @@ if str(SOURCE_DIR) not in sys.path:
 
 import torch
 
-from episode import DIFFICULTIES, EpisodeConfig, run_episode
+from game_runner import DIFFICULTIES, play_game
 from rl.rollout import PPOBot
 from rl.ppo import ActorCritic
 from rl.reward import OpeningRewardConfig, default_opening_reward
@@ -120,25 +120,25 @@ def _load_actor(path: Path, device: str) -> tuple[ActorCritic, dict]:
     return actor_critic, info
 
 
-def _target_time(episode: dict, milestone) -> float | None:
+def _target_time(game: dict, milestone) -> float | None:
     field = (
         "opening_started_times"
         if milestone.required_phase == "started"
         else "opening_completion_times"
     )
-    value = episode[field].get(milestone.name)
+    value = game[field].get(milestone.name)
     return float(value) if value is not None else None
 
 
-def summarize_episodes(
-    episodes: list[dict], reward_config: OpeningRewardConfig
+def summarize_games(
+    games: list[dict], reward_config: OpeningRewardConfig
 ) -> dict:
     """Aggregate exactly the objective used by the PPO reward tracker."""
     targets = {}
     for milestone in reward_config.milestones:
         observed_times = [
-            value for episode in episodes
-            if (value := _target_time(episode, milestone)) is not None
+            value for game in games
+            if (value := _target_time(game, milestone)) is not None
         ]
         on_time = [value for value in observed_times
                    if value <= milestone.deadline]
@@ -146,7 +146,7 @@ def summarize_episodes(
             "required_phase": milestone.required_phase,
             "deadline_seconds": milestone.deadline,
             "on_time": len(on_time),
-            "on_time_rate": len(on_time) / len(episodes),
+            "on_time_rate": len(on_time) / len(games),
             "observed": len(observed_times),
             "median_seconds": (
                 round(statistics.median(observed_times), 2)
@@ -157,22 +157,22 @@ def summarize_episodes(
             ),
         }
 
-    rewards = [float(episode["episode_reward"]) for episode in episodes]
-    goals = sum(bool(episode["reward_goal_met"]) for episode in episodes)
+    rewards = [float(game["total_reward"]) for game in games]
+    goals = sum(bool(game["reward_goal_met"]) for game in games)
     return {
-        "episodes": len(episodes),
+        "games": len(games),
         "goals_met": goals,
-        "goal_rate": goals / len(episodes),
+        "goal_rate": goals / len(games),
         "mean_reward": statistics.fmean(rewards),
         "median_reward": statistics.median(rewards),
         "targets": targets,
     }
 
 
-def _format_episode_targets(episode: dict, reward_config) -> str:
+def _format_game_targets(game: dict, reward_config) -> str:
     parts = []
     for milestone in reward_config.milestones:
-        value = _target_time(episode, milestone)
+        value = _target_time(game, milestone)
         if value is None:
             shown = "missing"
         else:
@@ -233,51 +233,42 @@ def main() -> None:
 
         for mode in args.modes:
             deterministic = mode == "greedy"
-            episodes = []
+            games = []
             print(f"\n{label} | {mode} | {checkpoint_path}")
             for game_index in range(args.games):
                 seed = args.seed + game_index
-                config = EpisodeConfig(
-                    seed=seed,
-                    difficulty=DIFFICULTIES[args.difficulty],
-                    time_limit=args.time_limit,
-                    goal_deadline=float(args.time_limit),
-                    checkpoint_path=str(checkpoint_path),
+                agent = PPOBot(
+                    actor_critic,
+                    reward_config,
                     device=device,
                     temperature=args.temperature,
                     enable_decision_log=args.decision_log,
                     log_dir=args.log_dir,
+                    goal_deadline=float(args.time_limit),
+                    deterministic=deterministic,
+                    enforce_opening_limits=not args.no_opening_limits,
                 )
-
-                def make_bot(_config: EpisodeConfig) -> PPOBot:
-                    return PPOBot(
-                        actor_critic,
-                        reward_config,
-                        device=device,
-                        temperature=args.temperature,
-                        enable_decision_log=args.decision_log,
-                        log_dir=args.log_dir,
-                        goal_deadline=float(args.time_limit),
-                        deterministic=deterministic,
-                        enforce_opening_limits=not args.no_opening_limits,
-                    )
-
-                episode = run_episode(config, bot_factory=make_bot).summary
-                episode["seed"] = seed
-                episodes.append(episode)
+                completed_game = play_game(
+                    agent,
+                    seed=seed,
+                    difficulty=DIFFICULTIES[args.difficulty],
+                    time_limit=args.time_limit,
+                )
+                summary = completed_game.summary
+                games.append(summary)
                 print(
-                    f"  seed={seed} reward={episode['episode_reward']:+.2f} "
-                    f"goal={'yes' if episode['reward_goal_met'] else 'no'} | "
-                    f"{_format_episode_targets(episode, reward_config)}"
+                    f"  seed={seed} reward={summary['total_reward']:+.2f} "
+                    f"goal={'yes' if summary['reward_goal_met'] else 'no'} | "
+                    f"{_format_game_targets(summary, reward_config)}"
                 )
 
-            aggregate = summarize_episodes(episodes, reward_config)
+            aggregate = summarize_games(games, reward_config)
             runs.append({
                 "policy": label,
                 "checkpoint": str(checkpoint_path.resolve()),
                 "mode": mode,
                 "aggregate": aggregate,
-                "episodes": episodes,
+                "games": games,
             })
             target_rates = " ".join(
                 f"{name}={stats['on_time_rate']:.0%}"

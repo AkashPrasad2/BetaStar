@@ -106,7 +106,7 @@ python source\run.py --checkpoint checkpoints\ppo_opening.pt
 Continue PPO training from the latest checkpoint:
 
 ```powershell
-python source\rl\train.py --updates 10 --episodes-per-update 6
+python source\rl\train.py --updates 10 --games-per-update 6
 ```
 
 Compare IL, latest PPO, and best PPO on held-out seeds:
@@ -125,7 +125,7 @@ source/
   run.py                 Play games with a trained policy
   replay_parser.py       Build IL sequences from SC2 replays
   model.py               Transformer model and IL training
-  episode.py             Shared SC2 episode lifecycle
+  game_runner.py         Launches one SC2 game
   gameplay/
     agent.py             Live policy and SC2 integration
     helpers.py           Economy, construction, and army controllers

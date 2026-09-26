@@ -314,7 +314,7 @@ class DecisionLogger:
             self._pending = None
 
     def finish(self, bot: BotAI | None = None, game_result=None,
-               episode_summary: dict | None = None):
+               game_summary: dict | None = None):
         """Resolve the last decision, write the summary, close the file."""
         if not self.enabled:
             return
@@ -330,13 +330,13 @@ class DecisionLogger:
         out("=" * 68)
         if game_result is not None:
             out(f"  Result: {game_result}")
-        if episode_summary is not None:
-            self._write({"_episode": episode_summary})
-            deadline = episode_summary.get("goal_deadline_seconds")
+        if game_summary is not None:
+            self._write({"_game": game_summary})
+            deadline = game_summary.get("goal_deadline_seconds")
             if deadline is not None:
                 out(f"  Goal by {deadline:g}s: "
-                    f"{'MET' if episode_summary.get('goal_met') else 'MISSED'}")
-            times = episode_summary.get("milestone_times", {})
+                    f"{'MET' if game_summary.get('goal_met') else 'MISSED'}")
+            times = game_summary.get("milestone_times", {})
             if times:
                 formatted = ", ".join(
                     f"{name}={seconds:.1f}s"

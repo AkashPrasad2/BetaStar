@@ -79,7 +79,7 @@ class PPOBot(ProtossBot):
     def _after_action_execution(self, action_id: int, result) -> None:
         self._last_execution_result = result
 
-    def _on_policy_episode_end(self, game_result) -> None:
+    def _on_policy_game_end(self, game_result) -> None:
         snapshot = snapshot_opening_state(self)
         reward = self.reward_tracker.observe(
             snapshot, self._last_execution_result, terminal=True
@@ -88,10 +88,10 @@ class PPOBot(ProtossBot):
             self.rollout[-1].reward += reward
             self.rollout[-1].done = True
 
-    def episode_summary(self, game_result=None) -> dict:
-        summary = super().episode_summary(game_result)
+    def game_summary(self, game_result=None) -> dict:
+        summary = super().game_summary(game_result)
         summary.update({
-            "episode_reward": round(self.reward_tracker.total_reward, 4),
+            "total_reward": round(self.reward_tracker.total_reward, 4),
             "ppo_decisions": len(self.rollout),
             "reward_goal_met": self.reward_tracker.goal_met,
             "opening_started_times": {
