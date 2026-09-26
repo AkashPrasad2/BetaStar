@@ -132,7 +132,7 @@ def snapshot_opening_state(bot) -> OpeningSnapshot:
         time_seconds=float(bot.time),
         started=frozenset(started),
         ready=frozenset(ready),
-        # ProtossBot observes these on every game step, so deadlines are judged
+        # PPOTrainingAgent observes these every game step, so deadlines are judged
         # at sub-decision precision rather than rounded up to the next 4s tick.
         completion_times=dict(bot.milestone_times),
         idle_unsaturated_nexuses=idle_unsaturated_nexuses,

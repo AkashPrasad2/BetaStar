@@ -15,7 +15,7 @@ sys.path.insert(0, str(SOURCE))
 import observation_wrapper  # noqa: E402
 from action_mask import build_legal_mask, build_training_mask  # noqa: E402
 from actions import _research  # noqa: E402
-from gameplay.helpers import ActionResult  # noqa: E402
+from helpers import ActionResult  # noqa: E402
 from obs_spec import (  # noqa: E402
     ACTION_ID,
     IDX_AIR_WEAPONS_LVL,

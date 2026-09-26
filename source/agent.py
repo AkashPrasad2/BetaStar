@@ -1,16 +1,16 @@
+"""Live SC2 agent that executes decisions from a trained policy."""
+
 from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR
 from sc2.bot_ai import BotAI
-from sc2.ids.unit_typeid import UnitTypeId
 
 import logging
 import math
-import numpy as np
 
 from observation_wrapper import ObservationWrapper
-from obs_spec import ACTION_ID, DECISION_INTERVAL_SECONDS, NUM_ACTIONS
+from obs_spec import DECISION_INTERVAL_SECONDS
 from model import load_model, predict_action, MAX_CONTEXT
 from telemetry.decision_log import DecisionLogger
-from gameplay.helpers import (
+from helpers import (
     ArmyState,
     auto_saturate_assimilators,
     set_production_rally_points,
@@ -31,25 +31,8 @@ DEVICE = "cpu"
 ENABLE_DECISION_LOG = False
 LOG_DIR = str(DEFAULT_LOG_DIR)
 
-# build-count targets for the PPO opening curriculum
-OPENING_STRUCTURE_LIMITS = {
-    "PYLON": 1,
-    "GATEWAY": 1,
-    "ASSIMILATOR": 1,
-    "NEXUS": 2,
-    "CYBERNETICSCORE": 1,
-}
 
-_OPENING_BUILD_ACTIONS = {
-    "PYLON": "build_pylon",
-    "GATEWAY": "build_gateway",
-    "ASSIMILATOR": "build_assimilator",
-    "NEXUS": "build_nexus",
-    "CYBERNETICSCORE": "build_cyberneticscore",
-}
-
-
-class ProtossBot(BotAI):
+class ProtossAgent(BotAI):
 
     def __init__(
         self,
@@ -58,27 +41,18 @@ class ProtossBot(BotAI):
         temperature: float | None = None,
         enable_decision_log: bool = ENABLE_DECISION_LOG,
         log_dir: str = LOG_DIR,
-        goal_deadline: float | None = None,
-        policy_model=None,
-        opening_limits_until: float | None = None,
+        policy=None,
     ):
         super().__init__()
         self.device = device
         self.temperature = temperature
-        self.goal_deadline = goal_deadline
-        self.opening_limits_until = opening_limits_until
         self.obs_wrapper = ObservationWrapper()
-        # Evaluation loads from disk. RL supplies the optimizer-owned policy
-        # directly so every game uses the same in-memory parameters.
         self.model = (
-            policy_model if policy_model is not None
+            policy if policy is not None
             else load_model(checkpoint_path, device=device)
         )
         self.obs_history: list = []  # rolling window of observation vectors
 
-        # Baseline/RL game measurements. These are observed on every SC2 step
-        # (not just every 4-second policy decision)
-        self.milestone_times: dict[str, float] = {}
         self.final_game_time: float = 0.0
         self.final_game_result = None
 
@@ -111,88 +85,35 @@ class ProtossBot(BotAI):
         self.decision_log = (
             DecisionLogger(log_dir) if enable_decision_log else None)
 
-    def _update_milestones(self):
-        """Record the first observed completion time for the opening goal."""
-        milestones = {
-            "pylon": (UnitTypeId.PYLON, 1),
-            "gateway": (UnitTypeId.GATEWAY, 1),
-            "assimilator": (UnitTypeId.ASSIMILATOR, 1),
-            "nexus": (UnitTypeId.NEXUS, 2),
-            "cybernetics_core": (UnitTypeId.CYBERNETICSCORE, 1),
-        }
-        for name, (unit_type, target_count) in milestones.items():
-            if (name not in self.milestone_times
-                    and self.structures(unit_type).ready.amount >= target_count):
-                self.milestone_times[name] = float(self.time)
-
     def game_summary(self, game_result=None) -> dict:
-        """Return JSON-serializable measurements for baseline/RL tooling."""
+        """Return basic JSON-serializable measurements for one game."""
         result = game_result if game_result is not None else self.final_game_result
         result_name = getattr(result, "name", str(
             result) if result is not None else None)
-        deadline = self.goal_deadline
-        required = ("pylon", "gateway", "cybernetics_core")
-        goal_met = all(
-            name in self.milestone_times
-            and (deadline is None or self.milestone_times[name] <= deadline)
-            for name in required
-        )
         return {
             "result": result_name,
             "game_time_seconds": round(float(self.final_game_time), 2),
-            "goal_deadline_seconds": deadline,
-            "goal_met": goal_met,
-            "milestone_times": {
-                name: round(value, 2)
-                for name, value in self.milestone_times.items()
-            },
         }
 
-    def _before_policy_decision(self, obs: list[float]) -> None:
-        """Extension hook used by rollout collectors before sampling."""
-
     def _select_policy_action(self):
-        """Sample from the IL policy; the PPO bot overrides this method."""
+        """Sample from the loaded policy."""
         predict_kwargs = {
             "device": self.device,
             "return_diagnostics": self.decision_log is not None,
         }
         if self.temperature is not None:
             predict_kwargs["temperature"] = self.temperature
-        opening_mask = self._opening_action_mask()
-        if opening_mask is not None:
-            predict_kwargs["legal_mask"] = opening_mask
         selected = predict_action(
             self.model, self.obs_history, **predict_kwargs)
         if self.decision_log is not None:
             return selected
         return selected, {}
 
-    def _opening_action_mask(self) -> np.ndarray | None:
-        """Block duplicate target structures during the PPO opening only."""
-        if (self.opening_limits_until is None
-                or self.time >= self.opening_limits_until):
-            return None
-
-        legal = np.ones(NUM_ACTIONS, dtype=np.bool_)
-        for structure_name, target_count in OPENING_STRUCTURE_LIMITS.items():
-            structure = getattr(UnitTypeId, structure_name)
-            completed = self.structures(structure).ready.amount
-            pending = self.already_pending(structure)
-            if completed + pending >= target_count:
-                action_name = _OPENING_BUILD_ACTIONS[structure_name]
-                legal[ACTION_ID[action_name]] = False
-        return legal
-
-    def _after_action_execution(self, action_id: int, result) -> None:
-        """Extension hook used by rollout collectors after execution."""
-
-    def _on_policy_game_end(self, game_result) -> None:
-        """Extension hook used to settle the final rollout transition."""
+    async def _execute_selected_action(self, action_id: int):
+        return await actions.execute_action(action_id, self)
 
     async def on_step(self, iteration: int):
         self.final_game_time = float(self.time)
-        self._update_milestones()
 
         # Always-on behaviours
         await self.distribute_workers()
@@ -225,7 +146,6 @@ class ProtossBot(BotAI):
         if len(self.obs_history) > MAX_CONTEXT:
             self.obs_history = self.obs_history[-MAX_CONTEXT:]
 
-        self._before_policy_decision(obs)
         action_id, diagnostics = self._select_policy_action()
 
         if self.decision_log is not None:
@@ -239,16 +159,13 @@ class ProtossBot(BotAI):
 
         # The execution layer reports why it did or did not act, so a dropped
         # decision is visible in the log instead of showing up as a mystery no-op.
-        result = await actions.execute_action(action_id, self)
+        result = await self._execute_selected_action(action_id)
         if self.decision_log is not None:
             self.decision_log.note_execution(result)
-        self._after_action_execution(action_id, result)
 
     async def on_end(self, game_result):
         self.final_game_result = game_result
         self.final_game_time = max(self.final_game_time, float(self.time))
-        self._update_milestones()
-        self._on_policy_game_end(game_result)
         if self.decision_log is not None:
             self.decision_log.finish(
                 self, game_result,

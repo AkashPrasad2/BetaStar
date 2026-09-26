@@ -4,7 +4,7 @@ from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
-from gameplay.helpers import build_structure, warp_in_unit, ActionResult
+from helpers import build_structure, warp_in_unit, ActionResult
 
 # Action names are defined once in obs_spec and imported
 from obs_spec import ACTION_NAMES as ACTIONS
@@ -209,7 +209,7 @@ async def execute_action(action_id: int, bot: BotAI):
         return _train(bot, UnitTypeId.COLOSSUS, UnitTypeId.ROBOTICSFACILITY, requires=UnitTypeId.ROBOTICSBAY)
 
     # Note: there is deliberately no attack action. Attacking is owned by the
-    # army state machine in gameplay.helpers.manage_army(); the parser never labelled it
+    # army state machine in helpers.manage_army(); the parser never labelled it
     # (106,449 Attack events, zero labels), so as a model output it could only
     # ever fire from sampling noise.
     return ActionResult.NOT_LABELLED

@@ -5,15 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import statistics
 import time
 from pathlib import Path
 
 from sc2.data import Race, Result
 
 from game_runner import DEFAULT_MAP, DIFFICULTIES, play_game
-from gameplay.agent import DEVICE, LOG_DIR, ProtossBot
+from agent import DEVICE, LOG_DIR
 from paths import LATEST_PPO_CHECKPOINT
+from rl.agent import PPOAgent
 from telemetry.console import configure_logging
 
 
@@ -70,15 +70,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def _median_milestone(games: list[dict], name: str) -> float | None:
-    values = [
-        game["milestone_times"][name]
-        for game in games
-        if name in game["milestone_times"]
-    ]
-    return round(statistics.median(values), 2) if values else None
-
-
 def _write_report(args: argparse.Namespace, games: list[dict]) -> Path:
     log_dir = Path(args.log_dir) / "evaluation"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +78,6 @@ def _write_report(args: argparse.Namespace, games: list[dict]) -> Path:
 
     wins = sum(game["result"] == Result.Victory.name for game in games)
     cutoffs = sum(game["cutoff_reached"] for game in games)
-    goals = sum(game["goal_met"] for game in games)
     report = {
         "config": {
             "map": DEFAULT_MAP,
@@ -104,12 +94,6 @@ def _write_report(args: argparse.Namespace, games: list[dict]) -> Path:
             "wins": wins,
             "win_rate": wins / len(games),
             "cutoffs": cutoffs,
-            "goals_met": goals,
-            "goal_rate": goals / len(games),
-            "median_milestone_seconds": {
-                name: _median_milestone(games, name)
-                for name in ("pylon", "gateway", "cybernetics_core")
-            },
         },
         "games": games,
     }
@@ -125,8 +109,7 @@ def main() -> None:
 
     for game_index in range(args.games):
         seed = args.seed + game_index
-        agent = ProtossBot(
-            goal_deadline=args.time_limit,
+        agent = PPOAgent(
             checkpoint_path=args.checkpoint,
             device=args.device,
             temperature=args.temperature,
@@ -149,17 +132,15 @@ def main() -> None:
         summary["game_index"] = game_index
         games.append(summary)
         logger.info(
-            "result=%s | goal_met=%s | milestones=%s",
-            summary["result"], summary["goal_met"],
-            summary["milestone_times"],
+            "result=%s | game_time=%.1fs",
+            summary["result"], summary["game_time_seconds"],
         )
 
     report_path = _write_report(args, games)
-    goals = sum(game["goal_met"] for game in games)
     wins = sum(game["result"] == Result.Victory.name for game in games)
     logger.info(
-        "evaluation complete | goals=%d/%d | wins=%d/%d | report=%s",
-        goals, len(games), wins, len(games), report_path,
+        "evaluation complete | wins=%d/%d | report=%s",
+        wins, len(games), report_path,
     )
 
 

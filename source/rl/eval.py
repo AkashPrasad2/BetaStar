@@ -22,7 +22,7 @@ if str(SOURCE_DIR) not in sys.path:
 import torch
 
 from game_runner import DIFFICULTIES, play_game
-from rl.rollout import PPOBot
+from rl.agent import PPOTrainingAgent
 from rl.ppo import ActorCritic
 from rl.reward import OpeningRewardConfig, default_opening_reward
 from telemetry.console import configure_logging
@@ -237,7 +237,7 @@ def main() -> None:
             print(f"\n{label} | {mode} | {checkpoint_path}")
             for game_index in range(args.games):
                 seed = args.seed + game_index
-                agent = PPOBot(
+                agent = PPOTrainingAgent(
                     actor_critic,
                     reward_config,
                     device=device,

@@ -42,7 +42,7 @@ from sc2.ids.upgrade_id import UpgradeId
 
 import obs_spec
 from actions import ACTIONS
-from gameplay.helpers import MAX_CONCURRENT_BUILDS, DEFAULT_MAX_CONCURRENT_BUILDS
+from helpers import MAX_CONCURRENT_BUILDS, DEFAULT_MAX_CONCURRENT_BUILDS
 
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from sc2.data import Difficulty, Race, Result
 from sc2.main import run_game as run_sc2_game
 from sc2.player import Bot, Computer
 
-from gameplay.agent import ProtossBot
+from agent import ProtossAgent
 
 
 DEFAULT_MAP = "AbyssalReefLE"
@@ -47,7 +47,7 @@ def _seed_everything(seed: int) -> None:
 
 
 def play_game(
-    agent: ProtossBot,
+    agent: ProtossAgent,
     *,
     seed: int = 54,
     difficulty: Difficulty = Difficulty.Easy,

@@ -126,13 +126,12 @@ source/
   replay_parser.py       Build IL sequences from SC2 replays
   model.py               Transformer model and IL training
   game_runner.py         Launches one SC2 game
-  gameplay/
-    agent.py             Live policy and SC2 integration
-    helpers.py           Economy, construction, and army controllers
+  agent.py               Live policy and SC2 integration
+  helpers.py             Economy, construction, and army controllers
   rl/
+    agent.py             PPO agent and rollout collection
     train.py             PPO training entry point
     eval.py              Fixed-seed IL/PPO benchmark
-    rollout.py           On-policy rollout collection
     ppo.py               Actor-critic model, GAE, and PPO updates
     reward.py            Opening reward definition and tracking
   telemetry/             Console and structured diagnostic logging

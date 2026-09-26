@@ -21,9 +21,8 @@ if str(SOURCE_DIR) not in sys.path:
 import torch
 
 from game_runner import DIFFICULTIES, play_game
-from gameplay.agent import OPENING_STRUCTURE_LIMITS
 from paths import BEST_IL_CHECKPOINT, DEFAULT_LOG_DIR, LATEST_PPO_CHECKPOINT
-from rl.rollout import PPOBot
+from rl.agent import OPENING_STRUCTURE_LIMITS, PPOTrainingAgent
 from rl.ppo import (
     DEFAULT_PPO_TEMPERATURE,
     ActorCritic,
@@ -379,7 +378,7 @@ def main() -> None:
                 seed = args.seed + (
                     (update - 1) * args.games_per_update + game_index
                 )
-                agent = PPOBot(
+                agent = PPOTrainingAgent(
                     actor_critic,
                     reward_config,
                     device=device,

@@ -1,5 +1,5 @@
 """
-SC2 Protoss Imitation Learning — Transformer Model + Training Script
+SC2 Protoss Imitation Learning Transformer Model + Training Script
 =====================================================================
 Architecture:
     obs (OBS_SIZE,) -> input proj (OBS_SIZE->128) -> sinusoidal pos enc
